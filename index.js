@@ -1,41 +1,46 @@
 const express = require('express');
 const axios = require('axios');
-const Database = require('better-sqlite3');
+const sqlite3 = require('sqlite3').verbose();
 
 const app = express();
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
 
-// --- BASE DE DATOS LOCAL (SQLITE) ---
-const db = new Database('gps_local.db');
+// --- BASE DE DATOS LOCAL (SQLITE3) ---
+const db = new sqlite3.Database('gps_local.db');
 
-// Crear tablas si no existen
-db.exec(`
-  CREATE TABLE IF NOT EXISTS usuarios (
-    username TEXT PRIMARY KEY,
-    password TEXT NOT NULL,
-    dispositivos TEXT NOT NULL,
-    velocidad_max INTEGER DEFAULT 80
-  );
+// Inicializar tablas en la base de datos
+db.serialize(() => {
+    db.run(`
+      CREATE TABLE IF NOT EXISTS usuarios (
+        username TEXT PRIMARY KEY,
+        password TEXT NOT NULL,
+        dispositivos TEXT NOT NULL,
+        velocidad_max INTEGER DEFAULT 80
+      )
+    `);
 
-  CREATE TABLE IF NOT EXISTS dispositivos (
-    deviceId TEXT PRIMARY KEY,
-    lat REAL,
-    lon REAL,
-    speed INTEGER,
-    batt TEXT,
-    fecha TEXT,
-    last_updated INTEGER,
-    alerta_desconexion_enviada INTEGER DEFAULT 0
-  );
-`);
+    db.run(`
+      CREATE TABLE IF NOT EXISTS dispositivos (
+        deviceId TEXT PRIMARY KEY,
+        lat REAL,
+        lon REAL,
+        speed INTEGER,
+        batt TEXT,
+        fecha TEXT,
+        last_updated INTEGER,
+        alerta_desconexion_enviada INTEGER DEFAULT 0
+      )
+    `);
 
-// Usuario Admin por defecto (admin / admin123)
-const adminExistente = db.prepare('SELECT * FROM usuarios WHERE username = ?').get('admin');
-if (!adminExistente) {
-    db.prepare('INSERT INTO usuarios (username, password, dispositivos, velocidad_max) VALUES (?, ?, ?, ?)').run('admin', 'admin123', '*', 80);
-    console.log('✅ Usuario admin creado (admin / admin123)');
-}
+    // Crear usuario admin si no existe
+    db.get('SELECT * FROM usuarios WHERE username = ?', ['admin'], (err, row) => {
+        if (!row) {
+            db.run('INSERT INTO usuarios (username, password, dispositivos, velocidad_max) VALUES (?, ?, ?, ?)', ['admin', 'admin123', '*', 80]);
+            console.log('✅ Usuario admin creado (admin / admin123)');
+        }
+    });
+});
 
 // --- CONFIGURACIÓN DE TELEGRAM ---
 const TELEGRAM_TOKEN = '8960091089:AAHQHEqEWh6Pli3yJDupRGInRL06qOq3iRg';
@@ -50,23 +55,23 @@ async function enviarAlertaTelegram(mensaje) {
     }
 }
 
-// --- MONITOREO DE PÉRDIDA DE SEÑAL GPS (VERIFICACIÓN CADA MINUTO) ---
-// Envía alerta si un dispositivo pasa más de 5 minutos (300,000 ms) sin transmitir
+// --- MONITOREO DE PÉRDIDA DE SEÑAL GPS (CADA MINUTO) ---
 const TIEMPO_LIMITE_SIN_SEÑAL_MS = 5 * 60 * 1000;
 
 setInterval(() => {
     const ahora = Date.now();
-    const dispositivosActivos = db.prepare('SELECT * FROM dispositivos WHERE alerta_desconexion_enviada = 0').all();
-
-    dispositivosActivos.forEach(dev => {
-        if (dev.last_updated && (ahora - dev.last_updated) > TIEMPO_LIMITE_SIN_SEÑAL_MS) {
-            enviarAlertaTelegram(`📡 *ALERTA: PÉRDIDA DE SEÑAL*\nEl dispositivo *${dev.deviceId}* lleva más de 5 minutos sin reportar ubicación.\nÚltimo reporte: ${dev.fecha}`);
-            db.prepare('UPDATE dispositivos SET alerta_desconexion_enviada = 1 WHERE deviceId = ?').run(dev.deviceId);
-        }
+    db.all('SELECT * FROM dispositivos WHERE alerta_desconexion_enviada = 0', [], (err, rows) => {
+        if (err || !rows) return;
+        rows.forEach(dev => {
+            if (dev.last_updated && (ahora - dev.last_updated) > TIEMPO_LIMITE_SIN_SEÑAL_MS) {
+                enviarAlertaTelegram(`📡 *ALERTA: PÉRDIDA DE SEÑAL*\nEl dispositivo *${dev.deviceId}* lleva más de 5 minutos sin reportar ubicación.\nÚltimo reporte: ${dev.fecha}`);
+                db.run('UPDATE dispositivos SET alerta_desconexion_enviada = 1 WHERE deviceId = ?', [dev.deviceId]);
+            }
+        });
     });
 }, 60000);
 
-// --- PANEL ADMIN PARA REGISTRAR USUARIOS Y ASIGNAR UNIDADES ---
+// --- PANEL ADMIN PARA REGISTRAR USUARIOS ---
 app.get('/panel-admin', (req, res) => {
     res.send(`
     <!DOCTYPE html>
@@ -106,54 +111,57 @@ app.get('/panel-admin', (req, res) => {
     `);
 });
 
-// Endpoint procesador del formulario de clientes
+// Procesador del formulario de administración
 app.post('/api/crear-usuario-form', (req, res) => {
     const { adminPass, username, password, dispositivos, velocidad_max } = req.body;
-    
-    const admin = db.prepare('SELECT * FROM usuarios WHERE username = "admin"').get();
-    if (!admin || admin.password !== adminPass) {
-        return res.status(401).send('<h3>❌ Contraseña de Administrador incorrecta</h3><a href="/panel-admin">Volver</a>');
-    }
 
-    try {
-        db.prepare('INSERT INTO usuarios (username, password, dispositivos, velocidad_max) VALUES (?, ?, ?, ?)').run(username, password, dispositivos, velocidad_max || 80);
-        res.send(`<h3>✅ Cliente '${username}' creado con éxito.</h3><p>Unidades asignadas: ${dispositivos}</p><a href="/">Ir al Mapa</a> | <a href="/panel-admin">Agregar otro</a>`);
-    } catch (e) {
-        res.send(`<h3>❌ Error: El nombre de usuario ya existe.</h3><a href="/panel-admin">Volver</a>`);
-    }
+    db.get('SELECT * FROM usuarios WHERE username = "admin"', [], (err, admin) => {
+        if (!admin || admin.password !== adminPass) {
+            return res.status(401).send('<h3>❌ Contraseña de Administrador incorrecta</h3><a href="/panel-admin">Volver</a>');
+        }
+
+        db.run('INSERT INTO usuarios (username, password, dispositivos, velocidad_max) VALUES (?, ?, ?, ?)', 
+            [username, password, dispositivos, velocidad_max || 80], 
+            function(err) {
+                if (err) {
+                    return res.send(`<h3>❌ Error: El nombre de usuario ya existe.</h3><a href="/panel-admin">Volver</a>`);
+                }
+                res.send(`<h3>✅ Cliente '${username}' creado con éxito.</h3><p>Unidades asignadas: ${dispositivos}</p><a href="/">Ir al Mapa</a> | <a href="/panel-admin">Agregar otro</a>`);
+            }
+        );
+    });
 });
 
-// --- RUTA API: CONSULTA UBICACIONES PERMITIDAS PARA EL USUARIO LOGUEADO ---
+// --- RUTA API: CONSULTA UBICACIONES PERMITIDAS ---
 app.get('/api/ubicacion-actual', (req, res) => {
     const u = req.query.user;
     const p = req.query.pass;
 
-    const usuario = db.prepare('SELECT * FROM usuarios WHERE username = ? AND password = ?').get(u, p);
-    if (!usuario) {
-        return res.status(401).json({ error: "No autorizado" });
-    }
+    db.get('SELECT * FROM usuarios WHERE username = ? AND password = ?', [u, p], (err, usuario) => {
+        if (!usuario) {
+            return res.status(401).json({ error: "No autorizado" });
+        }
 
-    let filas = [];
-    if (usuario.dispositivos === '*') {
-        filas = db.prepare('SELECT * FROM dispositivos').all();
-    } else {
-        const listaDevs = usuario.dispositivos.split(',').map(d => d.trim());
-        const placeholders = listaDevs.map(() => '?').join(',');
-        filas = db.prepare(`SELECT * FROM dispositivos WHERE deviceId IN (${placeholders})`).all(...listaDevs);
-    }
-
-    let resultado = {};
-    filas.forEach(dev => {
-        resultado[dev.deviceId] = {
-            lat: dev.lat,
-            lon: dev.lon,
-            speed: dev.speed,
-            batt: dev.batt,
-            fecha: dev.fecha
-        };
+        if (usuario.dispositivos === '*') {
+            db.all('SELECT * FROM dispositivos', [], (err, filas) => {
+                let resultado = {};
+                (filas || []).forEach(dev => {
+                    resultado[dev.deviceId] = { lat: dev.lat, lon: dev.lon, speed: dev.speed, batt: dev.batt, fecha: dev.fecha };
+                });
+                res.json(resultado);
+            });
+        } else {
+            const listaDevs = usuario.dispositivos.split(',').map(d => d.trim());
+            const placeholders = listaDevs.map(() => '?').join(',');
+            db.all(`SELECT * FROM dispositivos WHERE deviceId IN (${placeholders})`, listaDevs, (err, filas) => {
+                let resultado = {};
+                (filas || []).forEach(dev => {
+                    resultado[dev.deviceId] = { lat: dev.lat, lon: dev.lon, speed: dev.speed, batt: dev.batt, fecha: dev.fecha };
+                });
+                res.json(resultado);
+            });
+        }
     });
-
-    res.json(resultado);
 });
 
 // --- MAPA WEB EN VIVO CON LOGIN ---
@@ -266,7 +274,7 @@ app.get('/', (req, res) => {
     `);
 });
 
-// --- RECEPCIÓN DE REPORTES Y PROCESAMIENTO DE ALERTAS ---
+// --- RECEPCIÓN DE DATOS Y ALERTAS ---
 app.post('/api/posicion', (req, res) => {
     const id = req.query.id || req.body.id || 'Vehiculo_Desconocido';
     const lat = req.query.lat || req.body.lat;
@@ -279,32 +287,32 @@ app.post('/api/posicion', (req, res) => {
     const ahora = Date.now();
 
     if (lat && lon) {
-        // Notificar en Telegram si la señal se había perdido y acaba de regresar
-        const registroPrevio = db.prepare('SELECT alerta_desconexion_enviada FROM dispositivos WHERE deviceId = ?').get(id);
-        if (registroPrevio && registroPrevio.alerta_desconexion_enviada === 1) {
-            enviarAlertaTelegram(`📶 *SEÑAL RESTABLECIDA*\nEl dispositivo *${id}* ha vuelto a transmitir correctamente.`);
-        }
+        db.get('SELECT alerta_desconexion_enviada FROM dispositivos WHERE deviceId = ?', [id], (err, dev) => {
+            if (dev && dev.alerta_desconexion_enviada === 1) {
+                enviarAlertaTelegram(`📶 *SEÑAL RESTABLECIDA*\nEl dispositivo *${id}* ha vuelto a transmitir correctamente.`);
+            }
 
-        // Guardar o actualizar registro en la base de datos local
-        db.prepare(`
-            INSERT INTO dispositivos (deviceId, lat, lon, speed, batt, fecha, last_updated, alerta_desconexion_enviada)
-            VALUES (?, ?, ?, ?, ?, ?, ?, 0)
-            ON CONFLICT(deviceId) DO UPDATE SET
-            lat=excluded.lat, lon=excluded.lon, speed=excluded.speed, batt=excluded.batt, fecha=excluded.fecha, last_updated=excluded.last_updated, alerta_desconexion_enviada=0
-        `).run(id, Number(lat), Number(lon), velocidadKmH, batt || '--', fechaActual, ahora);
+            db.run(`
+                INSERT INTO dispositivos (deviceId, lat, lon, speed, batt, fecha, last_updated, alerta_desconexion_enviada)
+                VALUES (?, ?, ?, ?, ?, ?, ?, 0)
+                ON CONFLICT(deviceId) DO UPDATE SET
+                lat=excluded.lat, lon=excluded.lon, speed=excluded.speed, batt=excluded.batt, fecha=excluded.fecha, last_updated=excluded.last_updated, alerta_desconexion_enviada=0
+            `, [id, Number(lat), Number(lon), velocidadKmH, batt || '--', fechaActual, ahora]);
+        });
     }
 
-    // Evaluación de Alerta de Exceso de Velocidad
-    const usuarios = db.prepare('SELECT * FROM usuarios').all();
-    usuarios.forEach(u => {
-        const tieneAcceso = u.dispositivos === '*' || u.dispositivos.split(',').map(d => d.trim()).includes(id);
-        if (tieneAcceso && velocidadKmH > u.velocidad_max) {
-            enviarAlertaTelegram(`⚠️ *ALERTA DE VELOCIDAD*\nDispositivo: *${id}*\nVelocidad: *${velocidadKmH} km/h* (Límite: ${u.velocidad_max} km/h)\n📍 [Ver en Mapa](https://www.google.com/maps?q=${lat},${lon})`);
-        }
+    db.all('SELECT * FROM usuarios', [], (err, usuarios) => {
+        if (!usuarios) return;
+        usuarios.forEach(u => {
+            const tieneAcceso = u.dispositivos === '*' || u.dispositivos.split(',').map(d => d.trim()).includes(id);
+            if (tieneAcceso && velocidadKmH > u.velocidad_max) {
+                enviarAlertaTelegram(`⚠️ *ALERTA DE VELOCIDAD*\nDispositivo: *${id}*\nVelocidad: *${velocidadKmH} km/h* (Límite: ${u.velocidad_max} km/h)\n📍 [Ver en Mapa](https://www.google.com/maps?q=${lat},${lon})`);
+            }
+        });
     });
 
     res.sendStatus(200);
 });
 
 const PORT = process.env.PORT || 3000;
-app.listen(PORT, () => console.log(`Servidor iniciado en puerto ${PORT}`));
+app.listen(PORT, () => console.log(`Servidor GPS operativo en puerto ${PORT}`));
