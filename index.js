@@ -10,20 +10,13 @@ const TELEGRAM_TOKEN = '8960091089:AAHQHEqEWh6Pli3yJDupRGInRL06qOq3iRg';
 const TELEGRAM_CHAT_ID = '7996171093';
 
 // --- CONFIGURACIÓN DE GEOCERCA (CENTRO DE CDMX) ---
-const LAT_CENTRO = 19.4326;  // Coordenada Zócalo CDMX
+const LAT_CENTRO = 19.4326;
 const LON_CENTRO = -99.1332;
-const RADIO_MAXIMO_KM = 10;   // Límite de 10 km
+const RADIO_MAXIMO_KM = 10;
 
-// Variable para almacenar la última posición del vehículo
-let ultimaUbicacion = {
-    lat: 19.4326,
-    lon: -99.1332,
-    speed: 0,
-    batt: 100,
-    fecha: 'Sin datos aún'
-};
+// Objeto para almacenar múltiples dispositivos por su ID
+let dispositivos = {};
 
-// Función para calcular distancia (Haversine)
 function calcularDistanciaKm(lat1, lon1, lat2, lon2) {
     const R = 6371;
     const dLat = (lat2 - lat1) * Math.PI / 180;
@@ -35,7 +28,6 @@ function calcularDistanciaKm(lat1, lon1, lat2, lon2) {
     return R * c;
 }
 
-// Función para enviar mensajes automáticos a Telegram
 async function enviarAlertaTelegram(mensaje) {
     const url = `https://api.telegram.org/bot${TELEGRAM_TOKEN}/sendMessage`;
     try {
@@ -50,12 +42,12 @@ async function enviarAlertaTelegram(mensaje) {
     }
 }
 
-// --- RUTA API: DEVUELVE LA ÚLTIMA UBICACIÓN EN FORMATO JSON ---
+// Devuelve el objeto completo de todos los dispositivos
 app.get('/api/ubicacion-actual', (req, res) => {
-    res.json(ultimaUbicacion);
+    res.json(dispositivos);
 });
 
-// --- RUTA PRINCIPAL: MAPA INTERACTIVO HTML ---
+// Mapa interactivo preparado para múltiples marcadores
 app.get('/', (req, res) => {
     const html = `
     <!DOCTYPE html>
@@ -63,7 +55,7 @@ app.get('/', (req, res) => {
     <head>
         <meta charset="UTF-8">
         <meta name="viewport" content="width=device-width, initial-scale=1.0">
-        <title>Monitoreo GPS en Vivo</title>
+        <title>Flota de Monitoreo GPS</title>
         <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
         <style>
             body { margin: 0; padding: 0; font-family: Arial, sans-serif; }
@@ -72,50 +64,68 @@ app.get('/', (req, res) => {
                 position: absolute; top: 10px; left: 10px; z-index: 1000;
                 background: rgba(255, 255, 255, 0.95); padding: 12px 16px;
                 border-radius: 8px; box-shadow: 0 2px 6px rgba(0,0,0,0.3);
-                max-width: 280px;
+                max-width: 300px; max-height: 40vh; overflow-y: auto;
             }
             .info-panel h3 { margin: 0 0 8px 0; font-size: 16px; color: #333; }
-            .info-panel p { margin: 4px 0; font-size: 13px; color: #555; }
+            .dev-card { border-bottom: 1px solid #ddd; padding: 6px 0; font-size: 12px; }
+            .dev-card:last-child { border-bottom: none; }
         </style>
     </head>
     <body>
         <div class="info-panel">
-            <h3>📍 Monitoreo GPS</h3>
-            <p><b>Velocidad:</b> <span id="speed">0</span> km/h</p>
-            <p><b>Batería:</b> <span id="batt">--</span>%</p>
-            <p><b>Última act.:</b> <span id="fecha">Cargando...</span></p>
+            <h3>🚗 Dispositivos Activos</h3>
+            <div id="lista-dispositivos">Cargando...</div>
         </div>
         <div id="map"></div>
 
         <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
         <script>
-            let map = L.map('map').setView([${ultimaUbicacion.lat}, ${ultimaUbicacion.lon}], 15);
-            
+            let map = L.map('map').setView([19.4326, -99.1332], 12);
             L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
                 attribution: '© OpenStreetMap'
             }).addTo(map);
 
-            let marker = L.marker([${ultimaUbicacion.lat}, ${ultimaUbicacion.lon}]).addTo(map)
-                .bindPopup("<b>Vehículo en Monitoreo</b>").openPopup();
+            let markers = {};
 
             async function actualizarMapa() {
                 try {
                     const res = await fetch('/api/ubicacion-actual');
                     const data = await res.json();
                     
-                    const latLng = [Number(data.lat), Number(data.lon)];
-                    marker.setLatLng(latLng);
-                    map.panTo(latLng);
+                    let htmlList = '';
+                    const devIds = Object.keys(data);
 
-                    document.getElementById('speed').innerText = data.speed;
-                    document.getElementById('batt').innerText = data.batt || '--';
-                    document.getElementById('fecha').innerText = data.fecha;
+                    if (devIds.length === 0) {
+                        document.getElementById('lista-dispositivos').innerHTML = '<p>Sin reportes</p>';
+                        return;
+                    }
+
+                    devIds.forEach(id => {
+                        const dev = data[id];
+                        const latLng = [Number(dev.lat), Number(dev.lon)];
+
+                        // Crear o actualizar marcador en el mapa
+                        if (markers[id]) {
+                            markers[id].setLatLng(latLng);
+                        } else {
+                            markers[id] = L.marker(latLng).addTo(map);
+                        }
+
+                        markers[id].bindPopup("<b>" + id + "</b><br>Velocidad: " + dev.speed + " km/h<br>Batería: " + dev.batt + "%");
+
+                        htmlList += "<div class='dev-card'>" +
+                            "<b>ID: " + id + "</b><br>" +
+                            "Velocidad: " + dev.speed + " km/h | Batería: " + dev.batt + "%<br>" +
+                            "Hora: " + dev.fecha +
+                            "</div>";
+                    });
+
+                    document.getElementById('lista-dispositivos').innerHTML = htmlList;
                 } catch (e) {
                     console.error("Error al actualizar mapa:", e);
                 }
             }
 
-            // Actualizar la posición en la pantalla cada 10 segundos
             setInterval(actualizarMapa, 10000);
             actualizarMapa();
         </script>
@@ -125,8 +135,9 @@ app.get('/', (req, res) => {
     res.send(html);
 });
 
-// --- ENDPOINT QUE RECIBE LOS DATOS DE TRACCAR CLIENT ---
+// Endpoint receptor
 app.post('/api/posicion', (req, res) => {
+    const id = req.query.id || req.body.id || 'Vehiculo_Desconocido';
     const lat = req.query.lat || req.body.lat;
     const lon = req.query.lon || req.body.lon;
     const speed = req.query.speed || req.body.speed || 0;
@@ -134,9 +145,8 @@ app.post('/api/posicion', (req, res) => {
 
     const velocidadKmH = Math.round(speed * 1.852);
 
-    // Guardar datos en memoria para el mapa interactivo
     if (lat && lon) {
-        ultimaUbicacion = {
+        dispositivos[id] = {
             lat: Number(lat),
             lon: Number(lon),
             speed: velocidadKmH,
@@ -145,33 +155,29 @@ app.post('/api/posicion', (req, res) => {
         };
     }
 
-    // 1. Alerta de velocidad (>80 km/h)
+    // Alertas identificando el vehículo por ID
     if (velocidadKmH > 80) {
-        enviarAlertaTelegram(`⚠️ *ALERTA DE VELOCIDAD*\nEl vehículo circula a *${velocidadKmH} km/h*.\n📍 [Ver en Google Maps](https://www.google.com/maps?q=${lat},${lon})`);
+        enviarAlertaTelegram(`⚠️ *ALERTA DE VELOCIDAD*\nDispositivo: *${id}*\nVelocidad: *${velocidadKmH} km/h*\n📍 [Ver en Mapa](https://www.google.com/maps?q=${lat},${lon})`);
     }
 
-    // 2. Movimiento nocturno (11:00 PM a 5:00 AM)
     const horaActual = new Date().getHours();
     if (horaActual >= 23 || horaActual <= 5) {
-        enviarAlertaTelegram(`🚨 *MOVIMIENTO NOCTURNO DETECTADO*\nSe detectó actividad a las ${horaActual}:00 hrs.\n📍 [Ver ubicación](https://www.google.com/maps?q=${lat},${lon})`);
+        enviarAlertaTelegram(`🚨 *MOVIMIENTO NOCTURNO*\nDispositivo: *${id}*\nHora: ${horaActual}:00 hrs\n📍 [Ver en Mapa](https://www.google.com/maps?q=${lat},${lon})`);
     }
 
-    // 3. Alerta de Geocerca (10 km del Centro de CDMX)
     if (lat && lon) {
         const distancia = calcularDistanciaKm(LAT_CENTRO, LON_CENTRO, Number(lat), Number(lon));
         if (distancia > RADIO_MAXIMO_KM) {
-            enviarAlertaTelegram(`📍 *ALERTA DE GEOCERCA:* El vehículo salió del centro de CDMX (está a *${distancia.toFixed(1)} km* del punto central).\n📍 [Ver ubicación](https://www.google.com/maps?q=${lat},${lon})`);
+            enviarAlertaTelegram(`📍 *ALERTA DE GEOCERCA*\nDispositivo: *${id}*\nDistancia del centro: *${distancia.toFixed(1)} km*\n📍 [Ver en Mapa](https://www.google.com/maps?q=${lat},${lon})`);
         }
     }
 
-    // 4. Batería baja
     if (batt && Number(batt) <= 15) {
-        enviarAlertaTelegram(`🔋 *BATERÍA BAJA:* El teléfono emisor tiene *${batt}%* de carga.`);
+        enviarAlertaTelegram(`🔋 *BATERÍA BAJA:* El dispositivo *${id}* tiene *${batt}%* de carga.`);
     }
 
     res.sendStatus(200);
 });
 
-// --- INICIO DEL SERVIDOR ---
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => console.log(`Servidor GPS iniciado en puerto ${PORT}`));
