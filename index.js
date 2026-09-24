@@ -9,7 +9,6 @@ app.use(express.urlencoded({ extended: true }));
 // --- BASE DE DATOS LOCAL (SQLITE3) ---
 const db = new sqlite3.Database('gps_local.db');
 
-// Inicializar tablas en la base de datos
 db.serialize(() => {
     db.run(`
       CREATE TABLE IF NOT EXISTS usuarios (
@@ -29,11 +28,12 @@ db.serialize(() => {
         batt TEXT,
         fecha TEXT,
         last_updated INTEGER,
-        alerta_desconexion_enviada INTEGER DEFAULT 0
+        last_moved INTEGER,
+        alerta_desconexion_enviada INTEGER DEFAULT 0,
+        alerta_detenido_enviada INTEGER DEFAULT 0
       )
     `);
 
-    // Crear usuario admin si no existe
     db.get('SELECT * FROM usuarios WHERE username = ?', ['admin'], (err, row) => {
         if (!row) {
             db.run('INSERT INTO usuarios (username, password, dispositivos, velocidad_max) VALUES (?, ?, ?, ?)', ['admin', 'admin123', '*', 80]);
@@ -55,23 +55,46 @@ async function enviarAlertaTelegram(mensaje) {
     }
 }
 
-// --- MONITOREO DE PÉRDIDA DE SEÑAL GPS (CADA MINUTO) ---
-const TIEMPO_LIMITE_SIN_SEÑAL_MS = 5 * 60 * 1000;
+// --- CONFIGURACIÓN DE TIEMPOS DE ALERTAS ---
+const TIEMPO_LIMITE_SIN_SEÑAL_MS = 5 * 60 * 1000;    // 5 minutos sin reportar
+const TIEMPO_LIMITE_DETENIDO_MS = 10 * 60 * 1000;     // ⏱️ 10 MINUTOS ESTÁTICO / DETENIDO
 
 setInterval(() => {
     const ahora = Date.now();
-    db.all('SELECT * FROM dispositivos WHERE alerta_desconexion_enviada = 0', [], (err, rows) => {
+
+    db.all('SELECT * FROM dispositivos', [], (err, rows) => {
         if (err || !rows) return;
+
         rows.forEach(dev => {
-            if (dev.last_updated && (ahora - dev.last_updated) > TIEMPO_LIMITE_SIN_SEÑAL_MS) {
+            // 1. Alerta Discreta de Pérdida de Señal (Vía Telegram)
+            if (dev.alerta_desconexion_enviada === 0 && dev.last_updated && (ahora - dev.last_updated) > TIEMPO_LIMITE_SIN_SEÑAL_MS) {
                 enviarAlertaTelegram(`📡 *ALERTA: PÉRDIDA DE SEÑAL*\nEl dispositivo *${dev.deviceId}* lleva más de 5 minutos sin reportar ubicación.\nÚltimo reporte: ${dev.fecha}`);
                 db.run('UPDATE dispositivos SET alerta_desconexion_enviada = 1 WHERE deviceId = ?', [dev.deviceId]);
+            }
+
+            // 2. Alerta Discreta de Vehículo Detenido (+10 Minutos) (Vía Telegram)
+            if (dev.alerta_detenido_enviada === 0 && dev.last_moved && (ahora - dev.last_moved) > TIEMPO_LIMITE_DETENIDO_MS) {
+                enviarAlertaTelegram(`🛑 *ALERTA: VEHÍCULO DETENIDO*\nEl dispositivo *${dev.deviceId}* lleva más de 10 minutos estático sin moverse.\n📍 [Ver Ubicación](https://www.google.com/maps?q=${dev.lat},${dev.lon})`);
+                db.run('UPDATE dispositivos SET alerta_detenido_enviada = 1 WHERE deviceId = ?', [dev.deviceId]);
             }
         });
     });
 }, 60000);
 
-// --- PANEL ADMIN PARA REGISTRAR USUARIOS ---
+// Endpoint manual de auxilio / estado
+app.post('/api/reportar-estado', (req, res) => {
+    const { usuario, estado, lat, lon, dispositivo } = req.body;
+
+    if (estado === 'SOS') {
+        enviarAlertaTelegram(`🚨 *¡ALERTA DE AUXILIO / SOS!*\nEl usuario *${usuario}* o unidad *${dispositivo || 'N/A'}* solicita *AYUDA INMEDIATA*.\n📍 [Ubicación en Google Maps](https://www.google.com/maps?q=${lat},${lon})`);
+    } else if (estado === 'OK') {
+        enviarAlertaTelegram(`✅ *ESTADO DE CONFIRMACIÓN*\nEl usuario *${usuario}* reporta que *TODO ESTÁ BIEN*.\n📍 [Ver Ubicación](https://www.google.com/maps?q=${lat},${lon})`);
+    }
+
+    res.json({ status: "ok" });
+});
+
+// Panel Admin
 app.get('/panel-admin', (req, res) => {
     res.send(`
     <!DOCTYPE html>
@@ -111,7 +134,6 @@ app.get('/panel-admin', (req, res) => {
     `);
 });
 
-// Procesador del formulario de administración
 app.post('/api/crear-usuario-form', (req, res) => {
     const { adminPass, username, password, dispositivos, velocidad_max } = req.body;
 
@@ -132,7 +154,7 @@ app.post('/api/crear-usuario-form', (req, res) => {
     });
 });
 
-// --- RUTA API: CONSULTA UBICACIONES PERMITIDAS ---
+// API Ubicaciones
 app.get('/api/ubicacion-actual', (req, res) => {
     const u = req.query.user;
     const p = req.query.pass;
@@ -164,7 +186,7 @@ app.get('/api/ubicacion-actual', (req, res) => {
     });
 });
 
-// --- MAPA WEB EN VIVO CON LOGIN ---
+// Mapa Web Silencioso / Discreto
 app.get('/', (req, res) => {
     res.send(`
     <!DOCTYPE html>
@@ -182,7 +204,10 @@ app.get('/', (req, res) => {
             #map { width: 100%; height: 100%; }
             .info-panel { position: absolute; top: 10px; left: 10px; z-index: 1000; background: rgba(255, 255, 255, 0.95); padding: 12px 16px; border-radius: 8px; box-shadow: 0 2px 6px rgba(0,0,0,0.3); max-width: 280px; }
             .dev-card { border-bottom: 1px solid #ddd; padding: 6px 0; font-size: 12px; }
-            .logout-btn { margin-top: 8px; padding: 5px 10px; background: #dc3545; color: white; border: none; border-radius: 4px; cursor: pointer; font-size: 11px; }
+            .btn-status { width: 100%; padding: 8px; margin-top: 6px; border: none; border-radius: 4px; font-weight: bold; cursor: pointer; color: white; font-size: 12px; }
+            .btn-ok { background: #28a745; }
+            .btn-sos { background: #dc3545; }
+            .logout-btn { margin-top: 12px; padding: 5px 10px; background: #6c757d; color: white; border: none; border-radius: 4px; cursor: pointer; font-size: 11px; width: 100%; }
         </style>
     </head>
     <body>
@@ -199,6 +224,12 @@ app.get('/', (req, res) => {
             <div class="info-panel">
                 <h3>🚗 Vehículos Asignados</h3>
                 <div id="lista-dispositivos">Cargando...</div>
+                <hr>
+                <div style="text-align: center;">
+                    <span style="font-size: 11px; font-weight: bold; color: #444;">Reportar Estado:</span>
+                    <button class="btn-status btn-ok" onclick="enviarReporteEstado('OK')">✅ Todo está Bien</button>
+                    <button class="btn-status btn-sos" onclick="enviarReporteEstado('SOS')">🚨 Solicitar Ayuda (SOS)</button>
+                </div>
                 <button class="logout-btn" onclick="cerrarSesion()">Cerrar Sesión</button>
             </div>
             <div id="map"></div>
@@ -208,7 +239,7 @@ app.get('/', (req, res) => {
         <script>
             let currentUser = localStorage.getItem('gps_user');
             let currentPass = localStorage.getItem('gps_pass');
-            let map, markers = {};
+            let map, markers = {}, ultimasCoordenadas = { lat: 19.4326, lon: -99.1332 };
 
             if (currentUser && currentPass) mostrarMapa();
 
@@ -259,6 +290,8 @@ app.get('/', (req, res) => {
                     devIds.forEach(id => {
                         const dev = data[id];
                         const latLng = [Number(dev.lat), Number(dev.lon)];
+                        ultimasCoordenadas = { lat: dev.lat, lon: dev.lon, id: id };
+
                         if (markers[id]) markers[id].setLatLng(latLng);
                         else markers[id] = L.marker(latLng).addTo(map);
 
@@ -268,36 +301,79 @@ app.get('/', (req, res) => {
                     document.getElementById('lista-dispositivos').innerHTML = htmlList;
                 } catch (e) { console.error(e); }
             }
+
+            async function enviarReporteEstado(tipo) {
+                const msj = tipo === 'SOS' ? '¿Confirmas que deseas enviar una ALERTA DE AUXILIO (SOS)?' : '¿Confirmas reportar que TODO ESTÁ BIEN?';
+                if (!confirm(msj)) return;
+
+                await fetch('/api/reportar-estado', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        usuario: currentUser,
+                        estado: tipo,
+                        lat: ultimasCoordenadas.lat,
+                        lon: ultimasCoordenadas.lon,
+                        dispositivo: ultimasCoordenadas.id || 'Web'
+                    })
+                });
+                alert('Reporte enviado con éxito.');
+            }
         </script>
     </body>
     </html>
     `);
 });
 
-// --- RECEPCIÓN DE DATOS Y ALERTAS ---
+// Recepción de Posición
 app.post('/api/posicion', (req, res) => {
     const id = req.query.id || req.body.id || 'Vehiculo_Desconocido';
     const lat = req.query.lat || req.body.lat;
     const lon = req.query.lon || req.body.lon;
     const speed = req.query.speed || req.body.speed || 0;
     const batt = req.query.batt || req.body.batt;
+    const alarm = req.query.alarm || req.body.alarm;
 
     const velocidadKmH = Math.round(speed * 1.852);
     const fechaActual = new Date().toLocaleTimeString('es-MX', { timeZone: 'America/Mexico_City' });
     const ahora = Date.now();
 
+    if (alarm && (alarm.toLowerCase() === 'sos' || alarm.toLowerCase() === 'panic')) {
+        enviarAlertaTelegram(`🚨 *¡ALERTA DE BOTÓN DE PÁNICO (SOS)!*\nEl dispositivo *${id}* ha presionado el botón de pánico.\n📍 [Ubicación en Google Maps](https://www.google.com/maps?q=${lat},${lon})`);
+    }
+
     if (lat && lon) {
-        db.get('SELECT alerta_desconexion_enviada FROM dispositivos WHERE deviceId = ?', [id], (err, dev) => {
-            if (dev && dev.alerta_desconexion_enviada === 1) {
-                enviarAlertaTelegram(`📶 *SEÑAL RESTABLECIDA*\nEl dispositivo *${id}* ha vuelto a transmitir correctamente.`);
+        const nuevaLat = Number(lat);
+        const nuevaLon = Number(lon);
+
+        db.get('SELECT * FROM dispositivos WHERE deviceId = ?', [id], (err, dev) => {
+            let lastMoved = ahora;
+            let resetDetenido = 0;
+
+            if (dev) {
+                if (dev.alerta_desconexion_enviada === 1) {
+                    enviarAlertaTelegram(`📶 *SEÑAL RESTABLECIDA*\nEl dispositivo *${id}* ha vuelto a transmitir correctamente.`);
+                }
+
+                const latDiferencia = Math.abs(dev.lat - nuevaLat);
+                const lonDiferencia = Math.abs(dev.lon - nuevaLon);
+
+                if (velocidadKmH > 3 || latDiferencia > 0.0005 || lonDiferencia > 0.0005) {
+                    lastMoved = ahora;
+                    resetDetenido = 0;
+                } else {
+                    lastMoved = dev.last_moved || ahora;
+                    resetDetenido = dev.alerta_detenido_enviada;
+                }
             }
 
             db.run(`
-                INSERT INTO dispositivos (deviceId, lat, lon, speed, batt, fecha, last_updated, alerta_desconexion_enviada)
-                VALUES (?, ?, ?, ?, ?, ?, ?, 0)
+                INSERT INTO dispositivos (deviceId, lat, lon, speed, batt, fecha, last_updated, last_moved, alerta_desconexion_enviada, alerta_detenido_enviada)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, 0, ?)
                 ON CONFLICT(deviceId) DO UPDATE SET
-                lat=excluded.lat, lon=excluded.lon, speed=excluded.speed, batt=excluded.batt, fecha=excluded.fecha, last_updated=excluded.last_updated, alerta_desconexion_enviada=0
-            `, [id, Number(lat), Number(lon), velocidadKmH, batt || '--', fechaActual, ahora]);
+                lat=excluded.lat, lon=excluded.lon, speed=excluded.speed, batt=excluded.batt, fecha=excluded.fecha, 
+                last_updated=excluded.last_updated, last_moved=excluded.last_moved, alerta_desconexion_enviada=0, alerta_detenido_enviada=excluded.alerta_detenido_enviada
+            `, [id, nuevaLat, nuevaLon, velocidadKmH, batt || '--', fechaActual, ahora, lastMoved, resetDetenido]);
         });
     }
 
