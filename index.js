@@ -378,69 +378,36 @@ async function enviarReporteEstado(tipo) {
                 actualizarMapa();
                 setInterval(actualizarMapa, 10000);
             }
+async function actualizarMapa() {
+        try {
+        const res = await fetch('/api/dispositivos');
+        const data = await res.json();
+        
+        if (!data || data.length === 0) return;
 
-            async function actualizarMapa() {
-                try {
-                    const res = await fetch(\`/api/ubicacion-actual?user=\${currentUser}&pass=\${currentPass}\`);
-                    if (!res.ok) { cerrarSesion(); return; }
-                    const data = await res.json();
-                    let htmlList = '';
-                    const devIds = Object.keys(data);
+        const dev = data[0];
+        ultimasCoordenadas = { lat: dev.lat, lon: dev.lon, id: dev.deviceId };
 
-                    if (devIds.length === 0) {
-                        document.getElementById('lista-dispositivos').innerHTML = '<p style="font-size:12px;">Esperando señal del vehículo...</p>';
-                        return;
-                    }
+        if (marker) {
+            marker.setLatLng([dev.lat, dev.lon]);
+        } else {
+            marker = L.marker([dev.lat, dev.lon]).addTo(map);
+        }
 
-                    devIds.forEach(id => {
-                        const dev = data[id];
-                        const latLng = [Number(dev.lat), Number(dev.lon)];
-                        ultimasCoordenadas = { lat: dev.lat, lon: dev.lon, id: id };
+        let infoDiv = document.getElementById('info-vehiculo-datos');
+        if (infoDiv) {
+            infoDiv.innerHTML = `
+                <b>${dev.deviceId}</b><br>
+                Velocidad: ${dev.speed} km/h | Batería: ${dev.batt}<br>
+                Hora: ${dev.fecha}
+            `;
+        }
+    } catch (err) {
+        console.error("Error al actualizar mapa:", err);
+    }
+}
 
-                        if (markers[id]) markers[id].setLatLng(latLng);
-                        else markers[id] = L.marker(latLng).addTo(map);
 
-                        markers[id].bindPopup("<b>" + id + "</b><br>Velocidad: " + dev.speed + " km/h");
-                        htmlList += "<div class='dev-card'><b>" + id + "</b><br>Velocidad: " + dev.speed + " km/h | Batería: " + dev.batt + "%<br>Hora: " + dev.fecha + "</div>";
-                    });
-                    document.getElementById('lista-dispositivos').innerHTML = htmlList;
-                } catch (e) { console.error(e); }
-            }
-
-            async function enviarReporteEstado(tipo) {
-                const msj = tipo === 'SOS' ? '¿Confirmas que deseas enviar una ALERTA DE AUXILIO (SOS)?' : '¿Confirmas reportar que TODO ESTÁ BIEN?';
-                if (!confirm(msj)) return;
-
-                await fetch('/api/reportar-estado', {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({
-                        usuario: currentUser,
-                        estado: tipo,
-                        lat: ultimasCoordenadas.lat,
-                        lon: ultimasCoordenadas.lon,
-                        dispositivo: ultimasCoordenadas.id || 'Web'
-                    })
-                });
-
-                const banner = document.getElementById('estado-banner');
-                banner.style.display = 'block';
-
-                if (tipo === 'OK') {
-                    banner.style.background = '#d4edda';
-                    banner.style.color = '#155724';
-                    banner.innerText = '✅ Estado enviado: Todo bien';
-
-                    setTimeout(() => {
-                        banner.style.display = 'none';
-                        banner.innerText = '';
-                    }, 2000);
-                } else {
-                    banner.style.background = '#f8d7da';
-                    banner.style.color = '#721c24';
-                    banner.innerText = '🚨 Alerta SOS enviada';
-                }
-            }
         </script>
     </body>
     </html>
