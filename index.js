@@ -1,10 +1,36 @@
 const express = require('express');
 const axios = require('axios');
 const sqlite3 = require('sqlite3').verbose();
+const nodemailer = require('nodemailer');
 
 const app = express();
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
+
+// --- CONFIGURACIÓN DE CORREO ELECTRÓNICO ---
+const EMAIL_ADMIN = 'tu_correo@gmail.com'; 
+
+const transporter = nodemailer.createTransport({
+    service: 'gmail',
+    auth: {
+        user: 'tu_correo_emisor@gmail.com', 
+        pass: 'xxxx xxxx xxxx xxxx'          
+    }
+});
+
+async function enviarCorreoAlerta(asunto, mensajeHtml) {
+    try {
+        await transporter.sendMail({
+            from: '"Sistema GPS" <tu_correo_emisor@gmail.com>',
+            to: EMAIL_ADMIN,
+            subject: asunto,
+            html: mensajeHtml
+        });
+        console.log('📧 Correo enviado con éxito');
+    } catch (error) {
+        console.error('❌ Error enviando correo:', error.message);
+    }
+}
 
 // --- BASE DE DATOS LOCAL (SQLITE3) ---
 const db = new sqlite3.Database('gps_local.db');
@@ -49,15 +75,23 @@ const TELEGRAM_CHAT_ID = '7996171093';
 async function enviarAlertaTelegram(mensaje) {
     const url = `https://api.telegram.org/bot${TELEGRAM_TOKEN}/sendMessage`;
     try {
-        await axios.post(url, { chat_id: TELEGRAM_CHAT_ID, text: mensaje, parse_mode: 'Markdown' });
+        const res = await axios.post(url, { 
+            chat_id: TELEGRAM_CHAT_ID, 
+            text: mensaje 
+        });
+        console.log('✅ Alerta entregada a Telegram con éxito');
     } catch (error) {
-        console.error('Error enviando alerta a Telegram:', error.message);
+        if (error.response) {
+            console.error('❌ Telegram rechazó la alerta:', error.response.data);
+        } else {
+            console.error('❌ Error de conexión con Telegram:', error.message);
+        }
     }
 }
 
 // --- CONFIGURACIÓN DE TIEMPOS DE ALERTAS ---
 const TIEMPO_LIMITE_SIN_SEÑAL_MS = 5 * 60 * 1000;    // 5 minutos sin reportar
-const TIEMPO_LIMITE_DETENIDO_MS = 10 * 60 * 1000;     // ⏱️ 10 MINUTOS ESTÁTICO / DETENIDO
+const TIEMPO_LIMITE_DETENIDO_MS = 10 * 60 * 1000;     // 10 minutos estático
 
 setInterval(() => {
     const ahora = Date.now();
@@ -66,15 +100,24 @@ setInterval(() => {
         if (err || !rows) return;
 
         rows.forEach(dev => {
-            // 1. Alerta Discreta de Pérdida de Señal (Vía Telegram)
+            // 1. Alerta de Pérdida de Señal
             if (dev.alerta_desconexion_enviada === 0 && dev.last_updated && (ahora - dev.last_updated) > TIEMPO_LIMITE_SIN_SEÑAL_MS) {
-                enviarAlertaTelegram(`📡 *ALERTA: PÉRDIDA DE SEÑAL*\nEl dispositivo *${dev.deviceId}* lleva más de 5 minutos sin reportar ubicación.\nÚltimo reporte: ${dev.fecha}`);
+                const msjTelegram = `📡 ALERTA: PÉRDIDA DE SEÑAL\nEl dispositivo ${dev.deviceId} lleva más de 5 minutos sin reportar ubicación.\nÚltimo reporte: ${dev.fecha}`;
+                
+                enviarAlertaTelegram(msjTelegram);
+                enviarCorreoAlerta(`📡 Pérdida de Señal - ${dev.deviceId}`, `<p>El dispositivo <b>${dev.deviceId}</b> lleva más de 5 minutos sin reportar ubicación.<br>Último reporte: ${dev.fecha}</p>`);
+
                 db.run('UPDATE dispositivos SET alerta_desconexion_enviada = 1 WHERE deviceId = ?', [dev.deviceId]);
             }
 
-            // 2. Alerta Discreta de Vehículo Detenido (+10 Minutos) (Vía Telegram)
+            // 2. Alerta de Vehículo Detenido (+10 Minutos)
             if (dev.alerta_detenido_enviada === 0 && dev.last_moved && (ahora - dev.last_moved) > TIEMPO_LIMITE_DETENIDO_MS) {
-                enviarAlertaTelegram(`🛑 *ALERTA: VEHÍCULO DETENIDO*\nEl dispositivo *${dev.deviceId}* lleva más de 10 minutos estático sin moverse.\n📍 [Ver Ubicación](https://www.google.com/maps?q=${dev.lat},${dev.lon})`);
+                const urlMap = `https://www.google.com/maps?q=${dev.lat},${dev.lon}`;
+                const msjTelegram = `🛑 ALERTA: VEHÍCULO DETENIDO\nEl dispositivo ${dev.deviceId} lleva más de 10 minutos estático.\n📍 Ubicación: ${urlMap}`;
+                
+                enviarAlertaTelegram(msjTelegram);
+                enviarCorreoAlerta(`🛑 Vehículo Detenido (+10 min) - ${dev.deviceId}`, `<p>El dispositivo <b>${dev.deviceId}</b> lleva más de 10 minutos estático.<br><a href="${urlMap}">Ver en Google Maps</a></p>`);
+
                 db.run('UPDATE dispositivos SET alerta_detenido_enviada = 1 WHERE deviceId = ?', [dev.deviceId]);
             }
         });
@@ -84,11 +127,13 @@ setInterval(() => {
 // Endpoint manual de auxilio / estado
 app.post('/api/reportar-estado', (req, res) => {
     const { usuario, estado, lat, lon, dispositivo } = req.body;
+    const urlMap = `https://www.google.com/maps?q=${lat},${lon}`;
 
     if (estado === 'SOS') {
-        enviarAlertaTelegram(`🚨 *¡ALERTA DE AUXILIO / SOS!*\nEl usuario *${usuario}* o unidad *${dispositivo || 'N/A'}* solicita *AYUDA INMEDIATA*.\n📍 [Ubicación en Google Maps](https://www.google.com/maps?q=${lat},${lon})`);
+        enviarAlertaTelegram(`🚨 ALERTA DE AUXILIO / SOS!\nEl usuario ${usuario} o unidad ${dispositivo || 'N/A'} solicita AYUDA INMEDIATA.\n📍 Ubicación: ${urlMap}`);
+        enviarCorreoAlerta(`🚨 ALERTA SOS - ${usuario}`, `<p>El usuario <b>${usuario}</b> solicita AYUDA INMEDIATA.<br><a href="${urlMap}">Ver en Google Maps</a></p>`);
     } else if (estado === 'OK') {
-        enviarAlertaTelegram(`✅ *ESTADO DE CONFIRMACIÓN*\nEl usuario *${usuario}* reporta que *TODO ESTÁ BIEN*.\n📍 [Ver Ubicación](https://www.google.com/maps?q=${lat},${lon})`);
+        enviarAlertaTelegram(`✅ CONFIRMACIÓN DE ESTADO\nEl usuario ${usuario} reporta que TODO ESTÁ BIEN.\n📍 Ubicación: ${urlMap}`);
     }
 
     res.json({ status: "ok" });
@@ -106,8 +151,6 @@ app.get('/panel-admin', (req, res) => {
             .box { max-width: 450px; background: white; padding: 25px; border-radius: 8px; margin: auto; box-shadow: 0 2px 8px rgba(0,0,0,0.1); }
             input { width: 92%; padding: 8px; margin: 8px 0; display: block; border: 1px solid #ccc; border-radius: 4px; }
             button { width: 97%; padding: 10px; background: #28a745; color: white; border: none; border-radius: 4px; cursor: pointer; font-weight: bold; margin-top: 10px; }
-            button:hover { background: #218838; }
-            .hint { font-size: 11px; color: #666; margin-bottom: 10px; }
         </style>
     </head>
     <body>
@@ -123,7 +166,6 @@ app.get('/panel-admin', (req, res) => {
                 <input type="text" name="password" placeholder="Ej. clave123" required />
                 <label><b>Dispositivos Asignados:</b></label>
                 <input type="text" name="dispositivos" placeholder="Ej. dispositivo uno, Unidad 2" required />
-                <div class="hint">Nombres exactos separados por coma.</div>
                 <label><b>Límite de Velocidad (km/h):</b></label>
                 <input type="number" name="velocidad_max" value="80" required />
                 <button type="submit">Guardar Cliente</button>
@@ -148,7 +190,7 @@ app.post('/api/crear-usuario-form', (req, res) => {
                 if (err) {
                     return res.send(`<h3>❌ Error: El nombre de usuario ya existe.</h3><a href="/panel-admin">Volver</a>`);
                 }
-                res.send(`<h3>✅ Cliente '${username}' creado con éxito.</h3><p>Unidades asignadas: ${dispositivos}</p><a href="/">Ir al Mapa</a> | <a href="/panel-admin">Agregar otro</a>`);
+                res.send(`<h3>✅ Cliente '${username}' creado con éxito.</h3><p>Unidades asignadas: ${dispositivos}</p><a href="/">Ir al Mapa</a>`);
             }
         );
     });
@@ -186,7 +228,7 @@ app.get('/api/ubicacion-actual', (req, res) => {
     });
 });
 
-// Mapa Web Silencioso / Discreto
+// Mapa Web con Auto-limpieza de Alertas
 app.get('/', (req, res) => {
     res.send(`
     <!DOCTYPE html>
@@ -208,6 +250,7 @@ app.get('/', (req, res) => {
             .btn-ok { background: #28a745; }
             .btn-sos { background: #dc3545; }
             .logout-btn { margin-top: 12px; padding: 5px 10px; background: #6c757d; color: white; border: none; border-radius: 4px; cursor: pointer; font-size: 11px; width: 100%; }
+            #estado-banner { display: none; padding: 8px; font-size: 11px; border-radius: 4px; text-align: center; margin-top: 8px; font-weight: bold; }
         </style>
     </head>
     <body>
@@ -224,6 +267,7 @@ app.get('/', (req, res) => {
             <div class="info-panel">
                 <h3>🚗 Vehículos Asignados</h3>
                 <div id="lista-dispositivos">Cargando...</div>
+                <div id="estado-banner"></div>
                 <hr>
                 <div style="text-align: center;">
                     <span style="font-size: 11px; font-weight: bold; color: #444;">Reportar Estado:</span>
@@ -317,7 +361,25 @@ app.get('/', (req, res) => {
                         dispositivo: ultimasCoordenadas.id || 'Web'
                     })
                 });
-                alert('Reporte enviado con éxito.');
+
+                const banner = document.getElementById('estado-banner');
+                banner.style.display = 'block';
+
+                if (tipo === 'OK') {
+                    banner.style.background = '#d4edda';
+                    banner.style.color = '#155724';
+                    banner.innerText = '✅ Estado enviado: Todo bien';
+
+                    // Ocultar la alerta de la pantalla automáticamente tras 2 segundos
+                    setTimeout(() => {
+                        banner.style.display = 'none';
+                        banner.innerText = '';
+                    }, 2000);
+                } else {
+                    banner.style.background = '#f8d7da';
+                    banner.style.color = '#721c24';
+                    banner.innerText = '🚨 Alerta SOS enviada';
+                }
             }
         </script>
     </body>
@@ -339,7 +401,9 @@ app.post('/api/posicion', (req, res) => {
     const ahora = Date.now();
 
     if (alarm && (alarm.toLowerCase() === 'sos' || alarm.toLowerCase() === 'panic')) {
-        enviarAlertaTelegram(`🚨 *¡ALERTA DE BOTÓN DE PÁNICO (SOS)!*\nEl dispositivo *${id}* ha presionado el botón de pánico.\n📍 [Ubicación en Google Maps](https://www.google.com/maps?q=${lat},${lon})`);
+        const urlMap = `https://www.google.com/maps?q=${lat},${lon}`;
+        enviarAlertaTelegram(`🚨 ALERTA DE BOTÓN DE PÁNICO (SOS)!\nEl dispositivo ${id} ha presionado el botón de pánico.\n📍 Ubicación: ${urlMap}`);
+        enviarCorreoAlerta(`🚨 BOTÓN DE PÁNICO - ${id}`, `<p>El dispositivo <b>${id}</b> presionó el botón de pánico.<br><a href="${urlMap}">Ver en Google Maps</a></p>`);
     }
 
     if (lat && lon) {
@@ -352,7 +416,7 @@ app.post('/api/posicion', (req, res) => {
 
             if (dev) {
                 if (dev.alerta_desconexion_enviada === 1) {
-                    enviarAlertaTelegram(`📶 *SEÑAL RESTABLECIDA*\nEl dispositivo *${id}* ha vuelto a transmitir correctamente.`);
+                    enviarAlertaTelegram(`📶 SEÑAL RESTABLECIDA\nEl dispositivo ${id} ha vuelto a transmitir correctamente.`);
                 }
 
                 const latDiferencia = Math.abs(dev.lat - nuevaLat);
@@ -368,27 +432,4 @@ app.post('/api/posicion', (req, res) => {
             }
 
             db.run(`
-                INSERT INTO dispositivos (deviceId, lat, lon, speed, batt, fecha, last_updated, last_moved, alerta_desconexion_enviada, alerta_detenido_enviada)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, 0, ?)
-                ON CONFLICT(deviceId) DO UPDATE SET
-                lat=excluded.lat, lon=excluded.lon, speed=excluded.speed, batt=excluded.batt, fecha=excluded.fecha, 
-                last_updated=excluded.last_updated, last_moved=excluded.last_moved, alerta_desconexion_enviada=0, alerta_detenido_enviada=excluded.alerta_detenido_enviada
-            `, [id, nuevaLat, nuevaLon, velocidadKmH, batt || '--', fechaActual, ahora, lastMoved, resetDetenido]);
-        });
-    }
-
-    db.all('SELECT * FROM usuarios', [], (err, usuarios) => {
-        if (!usuarios) return;
-        usuarios.forEach(u => {
-            const tieneAcceso = u.dispositivos === '*' || u.dispositivos.split(',').map(d => d.trim()).includes(id);
-            if (tieneAcceso && velocidadKmH > u.velocidad_max) {
-                enviarAlertaTelegram(`⚠️ *ALERTA DE VELOCIDAD*\nDispositivo: *${id}*\nVelocidad: *${velocidadKmH} km/h* (Límite: ${u.velocidad_max} km/h)\n📍 [Ver en Mapa](https://www.google.com/maps?q=${lat},${lon})`);
-            }
-        });
-    });
-
-    res.sendStatus(200);
-});
-
-const PORT = process.env.PORT || 3000;
-app.listen(PORT, () => console.log(`Servidor GPS operativo en puerto ${PORT}`));
+    
