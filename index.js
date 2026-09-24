@@ -306,6 +306,67 @@ app.get('/', (req, res) => {
                 localStorage.removeItem('gps_pass');
                 location.reload();
             }
+async function enviarReporteEstado(tipo) {
+    const msj = tipo === 'SOS' ? '¿Confirmas que deseas enviar una ALERTA DE AUXILIO (SOS)?' : '¿Confirmas reportar que TODO ESTÁ BIEN?';
+    if (!confirm(msj)) return;
+
+    // Buscar si ya existe un aviso previo y eliminarlo
+    const avisoPrevio = document.getElementById('aviso-confirmacion');
+    if (avisoPrevio) avisoPrevio.remove();
+
+    // Crear el recuadro de aviso dinámico
+    const aviso = document.createElement('div');
+    aviso.id = 'aviso-confirmacion';
+    aviso.style.padding = '10px';
+    aviso.style.marginTop = '10px';
+    aviso.style.borderRadius = '5px';
+    aviso.style.textAlign = 'center';
+    aviso.style.fontWeight = 'bold';
+    aviso.style.fontSize = '12px';
+
+    if (tipo === 'OK') {
+        aviso.style.backgroundColor = '#d4edda';
+        aviso.style.color = '#155724';
+        aviso.style.border = '1px solid #c3e6cb';
+        aviso.innerText = '✅ Reporte enviado: Todo está bien';
+    } else {
+        aviso.style.backgroundColor = '#f8d7da';
+        aviso.style.color = '#721c24';
+        aviso.style.border = '1px solid #f5c6cb';
+        aviso.innerText = '🚨 Alerta SOS enviada correctamente';
+    }
+
+    // Insertar el aviso dentro del panel
+    const panel = document.querySelector('.info-panel') || document.querySelector('div[style*="background"]');
+    if (panel) {
+        panel.appendChild(aviso);
+    }
+
+    // Petición al servidor en segundo plano
+    try {
+        await fetch('/api/reportar-estado', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+                usuario: currentUser,
+                estado: tipo,
+                lat: ultimasCoordenadas.lat,
+                lon: ultimasCoordenadas.lon,
+                dispositivo: ultimasCoordenadas.id || 'Web'
+            })
+        });
+    } catch (e) {
+        console.error("Error al enviar reporte:", e);
+    }
+
+    // BORRADO AUTOMÁTICO: Elimina el recuadro por completo tras 3 segundos
+    setTimeout(() => {
+        const elementoABorrar = document.getElementById('aviso-confirmacion');
+        if (elementoABorrar) {
+            elementoABorrar.remove();
+        }
+    }, 3000);
+}
 
             function mostrarMapa() {
                 document.getElementById('login-box').style.display = 'none';
