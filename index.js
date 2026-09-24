@@ -435,9 +435,8 @@ app.post('/api/posicion', (req, res) => {
                 INSERT INTO dispositivos (deviceId, lat, lon, speed, batt, fecha, last_updated, last_moved, alerta_desconexion_enviada, alerta_detenido_enviada)
                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, 0, ?)
                 ON CONFLICT(deviceId) DO UPDATE SET
-                lat=excluded.lat, lon=excluded.lon, speed=excluded.speed, batt=excluded.batt, fecha=excluded.fecha, 
+                lat=excluded.lat, lon=excluded.lon, speed=excluded.speed, batt=excluded.batt, fecha=excluded.fecha,                lat=excluded.lat, lon=excluded.lon, speed=excluded.speed, batt=excluded.batt, fecha=excluded.fecha, 
                 last_updated=excluded.last_updated, last_moved=excluded.last_moved, alerta_desconexion_enviada=0, alerta_detenido_enviada=excluded.alerta_detenido_enviada
-            alerta_desconexion_enviada=0, alerta_detenido_enviada=excluded.alerta_detenido_enviada
             `, [id, nuevaLat, nuevaLon, velocidadKmH, batt || '--', fechaActual, ahora, lastMoved, resetDetenido]);
         });
     }
@@ -453,8 +452,11 @@ app.post('/api/posicion', (req, res) => {
             }
         });
     });
-        res.sendStatus(200);
+
+    res.sendStatus(200);
 });
 
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => console.log(`Servidor GPS operativo en puerto ${PORT}`));
+
+                
