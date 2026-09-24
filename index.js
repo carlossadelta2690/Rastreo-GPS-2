@@ -427,3 +427,34 @@ app.post('/api/posicion', (req, res) => {
                 } else {
                     lastMoved = dev.last_moved || ahora;
                     resetDetenido = dev.alerta_dete
+                                        resetDetenido = dev.alerta_detenido_enviada;
+                }
+            }
+
+            db.run(`
+                INSERT INTO dispositivos (deviceId, lat, lon, speed, batt, fecha, last_updated, last_moved, alerta_desconexion_enviada, alerta_detenido_enviada)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, 0, ?)
+                ON CONFLICT(deviceId) DO UPDATE SET
+                lat=excluded.lat, lon=excluded.lon, speed=excluded.speed, batt=excluded.batt, fecha=excluded.fecha, 
+                last_updated=excluded.last_updated, last_moved=excluded.last_moved, alerta_desconexion_enviada=0, alerta_detenido_enviada=excluded.alerta_detenido_enviada
+            alerta_desconexion_enviada=0, alerta_detenido_enviada=excluded.alerta_detenido_enviada
+            `, [id, nuevaLat, nuevaLon, velocidadKmH, batt || '--', fechaActual, ahora, lastMoved, resetDetenido]);
+        });
+    }
+
+    db.all('SELECT * FROM usuarios', [], (err, usuarios) => {
+        if (!usuarios) return;
+        usuarios.forEach(u => {
+            const tieneAcceso = u.dispositivos === '*' || u.dispositivos.split(',').map(d => d.trim()).includes(id);
+            if (tieneAcceso && velocidadKmH > u.velocidad_max) {
+                const urlMap = `https://www.google.com/maps?q=${lat},${lon}`;
+                enviarAlertaTelegram(`⚠️ ALERTA DE VELOCIDAD\nDispositivo: ${id}\nVelocidad: ${velocidadKmH} km/h (Límite: ${u.velocidad_max} km/h)\n📍 Ubicación: ${urlMap}`);
+                enviarCorreoAlerta(`⚠️ Exceso de Velocidad - ${id}`, `<p>El dispositivo <b>${id}</b> va a <b>${velocidadKmH} km/h</b> (Límite: ${u.velocidad_max} km/h).<br><a href="${urlMap}">Ver en Google Maps</a></p>`);
+            }
+        });
+    });
+        res.sendStatus(200);
+});
+
+const PORT = process.env.PORT || 3000;
+app.listen(PORT, () => console.log(`Servidor GPS operativo en puerto ${PORT}`));
