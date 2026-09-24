@@ -305,7 +305,7 @@ app.get('/', (req, res) => {
                 localStorage.removeItem('gps_user');
                 localStorage.removeItem('gps_pass');
                 location.reload();
-            
+       }     
 async function enviarReporteEstado(tipo) {
     const msj = tipo === 'SOS' ? '¿Confirmas que deseas enviar una ALERTA DE AUXILIO (SOS)?' : '¿Confirmas reportar que TODO ESTÁ BIEN?';
     if (!confirm(msj)) return;
