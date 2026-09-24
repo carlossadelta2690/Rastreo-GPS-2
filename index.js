@@ -8,20 +8,20 @@ app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
 
 // --- CONFIGURACIÓN DE CORREO ELECTRÓNICO ---
-const EMAIL_ADMIN = 'tu_correo@gmail.com'; 
+const EMAIL_ADMIN = process.env.EMAIL_ADMIN || 'tu_correo@gmail.com'; 
 
 const transporter = nodemailer.createTransport({
     service: 'gmail',
     auth: {
-        user: 'tu_correo_emisor@gmail.com', 
-        pass: 'xxxx xxxx xxxx xxxx'          
+        user: process.env.EMAIL_USER || 'tu_correo_emisor@gmail.com', 
+        pass: process.env.EMAIL_PASS || 'xxxx xxxx xxxx xxxx'          
     }
 });
 
 async function enviarCorreoAlerta(asunto, mensajeHtml) {
     try {
         await transporter.sendMail({
-            from: '"Sistema GPS" <tu_correo_emisor@gmail.com>',
+            from: `"Sistema GPS" <${process.env.EMAIL_USER || 'tu_correo_emisor@gmail.com'}>`,
             to: EMAIL_ADMIN,
             subject: asunto,
             html: mensajeHtml
@@ -69,13 +69,13 @@ db.serialize(() => {
 });
 
 // --- CONFIGURACIÓN DE TELEGRAM ---
-const TELEGRAM_TOKEN = '8960091089:AAHQHEqEWh6Pli3yJDupRGInRL06qOq3iRg';
-const TELEGRAM_CHAT_ID = '7996171093';
+const TELEGRAM_TOKEN = process.env.TELEGRAM_TOKEN || '8960091089:AAHQHEqEWh6Pli3yJDupRGInRL06qOq3iRg';
+const TELEGRAM_CHAT_ID = process.env.TELEGRAM_CHAT_ID || '7996171093';
 
 async function enviarAlertaTelegram(mensaje) {
     const url = `https://api.telegram.org/bot${TELEGRAM_TOKEN}/sendMessage`;
     try {
-        const res = await axios.post(url, { 
+        await axios.post(url, { 
             chat_id: TELEGRAM_CHAT_ID, 
             text: mensaje 
         });
@@ -370,7 +370,6 @@ app.get('/', (req, res) => {
                     banner.style.color = '#155724';
                     banner.innerText = '✅ Estado enviado: Todo bien';
 
-                    // Ocultar la alerta de la pantalla automáticamente tras 2 segundos
                     setTimeout(() => {
                         banner.style.display = 'none';
                         banner.innerText = '';
@@ -427,9 +426,4 @@ app.post('/api/posicion', (req, res) => {
                     resetDetenido = 0;
                 } else {
                     lastMoved = dev.last_moved || ahora;
-                    resetDetenido = dev.alerta_detenido_enviada;
-                }
-            }
-
-            db.run(`
-    
+                    resetDetenido = dev.alerta_dete
