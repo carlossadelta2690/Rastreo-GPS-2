@@ -305,7 +305,7 @@ app.get('/', (req, res) => {
                 localStorage.removeItem('gps_user');
                 localStorage.removeItem('gps_pass');
                 location.reload();
-            }
+            
 async function enviarReporteEstado(tipo) {
     const msj = tipo === 'SOS' ? '¿Confirmas que deseas enviar una ALERTA DE AUXILIO (SOS)?' : '¿Confirmas reportar que TODO ESTÁ BIEN?';
     if (!confirm(msj)) return;
@@ -374,38 +374,7 @@ async function enviarReporteEstado(tipo) {
                 if (!map) {
                     map = L.map('map').setView([19.4326, -99.1332], 12);
                     L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png').addTo(map);
-                }
-                actualizarMapa();
-                setInterval(actualizarMapa, 10000);
-            }
-async function actualizarMapa() {
-        try {
-        const res = await fetch('/api/dispositivos');
-        const data = await res.json();
-        
-        if (!data || data.length === 0) return;
 
-        const dev = data[0];
-        ultimasCoordenadas = { lat: dev.lat, lon: dev.lon, id: dev.deviceId };
-
-        if (marker) {
-            marker.setLatLng([dev.lat, dev.lon]);
-        } else {
-            marker = L.marker([dev.lat, dev.lon]).addTo(map);
-        }
-
-        let infoDiv = document.getElementById('info-vehiculo-datos');
-        if (infoDiv) {
-            infoDiv.innerHTML = `
-                <b>${dev.deviceId}</b><br>
-                Velocidad: ${dev.speed} km/h | Batería: ${dev.batt}<br>
-                Hora: ${dev.fecha}
-            `;
-       
-    } catch (err) {
-        console.error("Error al actualizar mapa:", err);
-    }
-}
 
 
         </script>
