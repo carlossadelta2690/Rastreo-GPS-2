@@ -401,7 +401,7 @@ async function actualizarMapa() {
                 Velocidad: ${dev.speed} km/h | Batería: ${dev.batt}<br>
                 Hora: ${dev.fecha}
             `;
-        }
+       
     } catch (err) {
         console.error("Error al actualizar mapa:", err);
     }
