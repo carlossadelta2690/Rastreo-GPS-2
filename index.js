@@ -370,15 +370,3 @@ app.listen(PORT, () => console.log('Servidor corriendo en puerto ' + PORT));
     `);
 });
 
-app.listen(PORT, () => console.log('Servidor corriendo en puerto ' + PORT));
-                    'Velocidad: ' + dev.speed + ' km/h | Batería: ' + dev.batt + '<br>' +
-                    'Última actualización: ' + dev.fecha;
-            } catch (err) {}
-        }
-    </script>
-</body>
-</html>
-    `);
-});
-
-app.listen(PORT, () => console.log('Servidor corriendo en puerto ' + PORT));
