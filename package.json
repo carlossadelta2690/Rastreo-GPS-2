@@ -1,28 +1,29 @@
 {
-  "name": "nombre-de-tu-proyecto",
+  "name": "rastreo-gps-2",
   "version": "1.0.0",
-  "description": "Una breve descripción de lo que hace tu proyecto",
+  "description": "Sistema de Rastreo GPS",
   "main": "index.js",
   "scripts": {
     "start": "node index.js",
-    "dev": "nodemon index.js",
-    "test": "echo \"Error: no test specified\" && exit 1"
+    "dev": "nodemon index.js"
   },
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/tu-usuario/tu-repositorio.git"
+    "url": "git+https://github.com/carlossadelta2690/Rastreo-GPS-2.git"
   },
   "keywords": [
     "node",
     "express",
     "javascript"
   ],
-  "author": "Tu Nombre <tu-email@ejemplo.com>",
+  "author": "carlossadelta2690",
   "license": "MIT",
   "bugs": {
-    "url": "https://github.com/tu-usuario/tu-repositorio/issues"
+    "url": "https://github.com/carlossadelta2690/Rastreo-GPS-2/issues"
   },
-  "homepage": "https://github.com/tu-usuario/tu-repositorio#readme",
-  "dependencies": {},
-  "devDependencies": {}
+  "homepage": "https://github.com/carlossadelta2690/Rastreo-GPS-2#readme",
+  "dependencies": {
+    "express": "^4.18.2",
+    "sqlite3": "^5.1.7"
+  }
 }
