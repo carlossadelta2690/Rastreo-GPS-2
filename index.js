@@ -33,7 +33,22 @@ async function sendTelegramAlert(message) {
   } catch (error) {
     console.error('Error enviando mensaje a Telegram:', error.message);
   }
-}
+// Middleware simple de autenticación o redirección
+app.get('/login', (req, res) => {
+    res.sendFile(path.join(__dirname, 'public', 'login.html'));
+});
+
+// Endpoint para validar credenciales
+app.post('/api/login', (req, res) => {
+    const { username, password } = req.body;
+    
+    // Sustituye con tu lógica de verificación/BD real
+    if (username === 'admin' && password === '123456') {
+        return res.json({ status: 'ok', token: 'token-de-sesion-demo' });
+    }
+    
+    res.status(401).json({ error: 'Credenciales incorrectas' });
+});
 
 // -------------------------------------------------------------
 // GEOCERCA: Límites aproximados de la CDMX (Bounding Box)
