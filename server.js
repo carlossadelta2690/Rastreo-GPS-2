@@ -6,14 +6,13 @@ const PORT = process.env.PORT || 3000;
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
 
-const TELEGRAM_BOT_TOKEN = process.env.TELEGRAM_BOT_TOKEN || '8960091089:AAHQHEqEWh6P1i3yJDupRGInRL06qOq3iRg';
-const TELEGRAM_CHAT_ID = process.env.TELEGRAM_CHAT_ID || '7996171093';
+const TELEGRAM_BOT_TOKEN = process.env.TELEGRAM_BOT_TOKEN;
+const TELEGRAM_CHAT_ID = process.env.TELEGRAM_CHAT_ID;
 
-// Centro de referencia: Ciudad de México (Zócalo / Centro)
 const CDMX_LAT = 19.4326;
 const CDMX_LON = -99.1332;
-const RADIO_MAXIMO_KM = 35; // Límite de la geocerca en kilómetros desde el centro de CDMX
-const TIEMPO_DETENIDO_MAX_MINUTOS = 30; // Tiempo sin movimiento para activar alerta (en minutos)
+const RADIO_MAXIMO_KM = 35;
+const TIEMPO_DETENIDO_MAX_MINUTOS = 30;
 
 let baseDatosGPS = {
     'dispositivo 1': {
@@ -31,9 +30,8 @@ let baseDatosGPS = {
     }
 };
 
-// Función para calcular distancia geográfica entre dos puntos (Fórmula de Haversine)
 function calcularDistanciaKM(lat1, lon1, lat2, lon2) {
-    const R = 6371; // Radio de la Tierra en km
+    const R = 6371;
     const dLat = (lat2 - lat1) * Math.PI / 180;
     const dLon = (lon2 - lon1) * Math.PI / 180;
     const a = Math.sin(dLat / 2) * Math.sin(dLat / 2) +
@@ -59,7 +57,6 @@ async function enviarNotificacionTelegram(texto) {
     req.end();
 }
 
-// Endpoint para recibir las coordenadas desde el GPS / celular
 app.all('/api/gps', (req, res) => {
     const data = { ...req.query, ...req.body };
     const id = data.id || data.deviceid || 'dispositivo 1';
@@ -79,12 +76,11 @@ app.all('/api/gps', (req, res) => {
     dev.lon = parseFloat(data.lon || dev.lon || CDMX_LON);
     const nuevaVelocidad = data.speed ? Math.round(parseFloat(data.speed) * 1.852) : 0;
 
-    // Manejo del contador de tiempo sin movimiento
     if (nuevaVelocidad === 0) {
         if (!dev.inicioDetenido) dev.inicioDetenido = new Date().getTime();
     } else {
         dev.inicioDetenido = null;
-        dev.alertaSinMovimientoEnviada = false; // Se restablece al moverse
+        dev.alertaSinMovimientoEnviada = false;
     }
 
     dev.speed = nuevaVelocidad;
@@ -94,7 +90,6 @@ app.all('/api/gps', (req, res) => {
     res.send('OK');
 });
 
-// Botones manuales de alerta (SOS / Todo Bien)
 app.post('/api/alerta', async (req, res) => {
     const { tipo, deviceId } = req.body;
     const dev = baseDatosGPS[deviceId] || { deviceId: 'dispositivo 1', usuarioAsignado: 'chofer', lat: CDMX_LAT, lon: CDMX_LON, batt: '98%' };
@@ -108,7 +103,6 @@ app.post('/api/alerta', async (req, res) => {
 
 app.get('/api/unidades', (req, res) => res.json(Object.values(baseDatosGPS)));
 
-// Interfaz Web Principal
 app.get('/', (req, res) => {
     res.send(`
 <!DOCTYPE html>
@@ -136,24 +130,34 @@ app.get('/', (req, res) => {
         let markers = {};
 
         async function update() {
-            const res = await fetch('/api/unidades');
-            const data = await res.json();
-            let html = '';
-            data.forEach(dev => {
-                html += '<div class="card">' +
-                    '<h3>🚘 ' + dev.deviceId + '</h3>' +
-                    '<p>👤 Usuario: <b>' + dev.usuarioAsignado + '</b></p>' +
-                    '<p>🔋 Batería: <b>' + dev.batt + '</b> | ⚡ Vel: <b>' + dev.speed + ' km/h</b></p>' +
-                    '<p>📍 Zona: <b>' + (dev.estadoGeofence || 'CDMX') + '</b></p>' +
-                    '<button class="btn btn-sos" onclick="sendAlert(\'SOS\', \'' + dev.deviceId + '\')">🚨 SOLICITAR AYUDA (SOS)</button>' +
-                    '<button class="btn btn-ok" onclick="sendAlert(\'OK\', \'' + dev.deviceId + '\')">✅ TODO BIEN</button>' +
-                    '</div>';
-                if (dev.lat && dev.lon) {
-                    if (markers[dev.deviceId]) markers[dev.deviceId].setLatLng([dev.lat, dev.lon]);
-                    else markers[dev.deviceId] = L.marker([dev.lat, dev.lon]).addTo(map);
-                }
-            });
-            document.getElementById('unidades').innerHTML = html;
+            try {
+                const res = await fetch('/api/unidades');
+                const data = await res.json();
+                let html = '';
+                data.forEach(dev => {
+                    const zona = dev.estadoGeofence || 'CDMX';
+                    html += \`
+                        <div class="card">
+                            <h3>🚘 \${dev.deviceId}</h3>
+                            <p>👤 Usuario: <b>\${dev.usuarioAsignado}</b></p>
+                            <p>🔋 Batería: <b>\${dev.batt}</b> | ⚡ Vel: <b>\${dev.speed} km/h</b></p>
+                            <p>📍 Zona: <b>\${zona}</b></p>
+                            <button class="btn btn-sos" onclick="sendAlert('SOS', '\${dev.deviceId}')">🚨 SOLICITAR AYUDA (SOS)</button>
+                            <button class="btn btn-ok" onclick="sendAlert('OK', '\${dev.deviceId}')">✅ TODO BIEN</button>
+                        </div>
+                    \`;
+                    if (dev.lat && dev.lon) {
+                        if (markers[dev.deviceId]) {
+                            markers[dev.deviceId].setLatLng([dev.lat, dev.lon]);
+                        } else {
+                            markers[dev.deviceId] = L.marker([dev.lat, dev.lon]).addTo(map);
+                        }
+                    }
+                });
+                document.getElementById('unidades').innerHTML = html;
+            } catch (err) {
+                console.error(err);
+            }
         }
 
         async function sendAlert(tipo, deviceId) {
@@ -164,13 +168,14 @@ app.get('/', (req, res) => {
             });
             alert('Alerta enviada a Telegram');
         }
-        update(); setInterval(update, 10000);
+
+        update();
+        setInterval(update, 10000);
     </script>
 </body>
 </html>`);
 });
 
-// Monitor automático en segundo plano (evalúa reglas cada 20 segundos)
 setInterval(async () => {
     const ahora = new Date().getTime();
 
@@ -178,8 +183,6 @@ setInterval(async () => {
         if (!dev.lat || !dev.lon) return;
 
         const mapaUrl = `https://maps.google.com/?q=${dev.lat},${dev.lon}`;
-
-        // 1. REGLA: Salida de Geocerca (CDMX)
         const distanciaCDMX = calcularDistanciaKM(CDMX_LAT, CDMX_LON, dev.lat, dev.lon);
         
         if (distanciaCDMX > RADIO_MAXIMO_KM) {
@@ -196,10 +199,9 @@ setInterval(async () => {
             }
         } else {
             dev.estadoGeofence = 'Dentro de CDMX';
-            dev.alertaFueraGeocercaEnviada = false; // Se restablece al volver a CDMX
+            dev.alertaFueraGeocercaEnviada = false;
         }
 
-        // 2. REGLA: Sin Movimiento (Tiempo inactivo excedido)
         if (dev.speed === 0 && dev.inicioDetenido) {
             const minutosDetenido = Math.floor((ahora - dev.inicioDetenido) / (1000 * 60));
             if (minutosDetenido >= TIEMPO_DETENIDO_MAX_MINUTOS && !dev.alertaSinMovimientoEnviada) {
@@ -217,4 +219,3 @@ setInterval(async () => {
 }, 20000);
 
 app.listen(PORT, () => console.log('Server activo en puerto ' + PORT));
-                                           
