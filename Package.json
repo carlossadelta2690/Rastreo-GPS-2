@@ -1,0 +1,13 @@
+{
+  "name": "rastreo-gps-2",
+  "version": "1.0.0",
+  "description": "Sistema de Rastreo GPS con login, alertas y Telegram",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js"
+  },
+  "dependencies": {
+    "express": "^4.18.2",
+    "socket.io": "^4.7.2"
+  }
+}
