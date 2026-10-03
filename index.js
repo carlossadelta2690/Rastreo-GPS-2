@@ -1,149 +1,109 @@
-const express = require('express');
-const http = require('http');
-const { Server } = require('socket.io');
-const cors = require('cors');
-const path = require('path');
+<!DOCTYPE html>
+<html lang="es">
+<head>
+  <meta charset="UTF-8">
+  <title>Panel de Rastreo GPS</title>
+  <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
+  <style>
+    body { margin: 0; font-family: sans-serif; display: flex; flex-direction: column; height: 100vh; }
+    header { background: #1e293b; color: white; padding: 10px 20px; display: flex; justify-content: space-between; align-items: center; }
+    #container { display: flex; flex: 1; }
+    #sidebar { width: 300px; padding: 15px; background: #f8fafc; border-right: 1px solid #e2e8f0; }
+    #map { flex: 1; }
+    .alert-banner { display: none; background: #ef4444; color: white; padding: 12px; text-align: center; font-weight: bold; }
+    button.btn-danger { background: #dc2626; color: white; border: none; padding: 8px 12px; border-radius: 4px; cursor: pointer; }
+  </style>
+</head>
+<body>
+  <div id="alertBanner" class="alert-banner"></div>
+  <header>
+    <h2>Monitoreo GPS</h2>
+    <div>
+      <span id="userInfo"></span>
+      <button class="btn-danger" onclick="logout()">Cerrar Sesión</button>
+    </div>
+  </header>
 
-const app = express();
-const server = http.createServer(app);
-const io = new Server(server, { cors: { origin: '*' } });
+  <div id="container">
+    <div id="sidebar">
+      <h3>Mis Unidades</h3>
+      <label for="unitSelect">Seleccionar unidad activa:</label>
+      <select id="unitSelect" style="width: 100%; padding: 8px; margin-top: 5px;"></select>
+      
+      <p><strong>Frecuencia:</strong> Transmitiendo cada 5 segundos.</p>
+      <div id="status">Estado: Conectando...</div>
+    </div>
+    <div id="map"></div>
+  </div>
 
-app.use(cors());
-app.use(express.json());
-app.use(express.static(path.join(__dirname, 'public')));
+  <script src="/socket.io/socket.io.js"></script>
+  <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+  <script>
+    const userSession = JSON.parse(localStorage.getItem('userSession'));
+    if (!userSession) window.location.href = '/login';
 
-// -------------------------------------------------------------
-// CONFIGURACIÓN DE TELEGRAM
-// -------------------------------------------------------------
-const TELEGRAM_BOT_TOKEN = process.env.TELEGRAM_BOT_TOKEN || 'TU_TELEGRAM_BOT_TOKEN';
-const TELEGRAM_CHAT_ID = process.env.TELEGRAM_CHAT_ID || 'TU_TELEGRAM_CHAT_ID';
-
-async function sendTelegramAlert(message) {
-  if (!TELEGRAM_BOT_TOKEN || TELEGRAM_BOT_TOKEN === 'TU_TELEGRAM_BOT_TOKEN') {
-    console.log('[Simulación Telegram]:', message);
-    return;
-  }
-  try {
-    const url = `https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendMessage`;
-    await fetch(url, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ chat_id: TELEGRAM_CHAT_ID, text: message })
+    document.getElementById('userInfo').innerText = `Usuario: ${userSession.name} | `;
+    const unitSelect = document.getElementById('unitSelect');
+    userSession.units.forEach(unit => {
+      const opt = document.createElement('option');
+      opt.value = unit;
+      opt.innerText = unit;
+      unitSelect.appendChild(opt);
     });
-  } catch (error) {
-    console.error('Error al enviar alerta a Telegram:', error.message);
-  }
-}
 
-// -------------------------------------------------------------
-// BASE DE DATOS EN MEMORIA (Usuarios y sus unidades asignadas)
-// -------------------------------------------------------------
-const USERS_DB = {
-  'admin': {
-    password: '123',
-    name: 'Administrador Flota',
-    units: ['unidad-01', 'unidad-02', 'unidad-03']
-  },
-  'chofer1': {
-    password: '123',
-    name: 'Juan Pérez',
-    units: ['unidad-01']
-  }
-};
+    // Configurar mapa centrado en CDMX
+    const map = L.map('map').setView([19.4326, -99.1332], 10);
+    L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png').addTo(map);
 
-// Estado global de ubicaciones activas
-const activeDevices = {};
+    // Dibujar el límite aproximado de la Geocerca CDMX
+    L.rectangle([[19.04, -99.37], [19.59, -98.94]], { color: "#ff7800", weight: 2, fillOpacity: 0.1 }).addTo(map);
 
-// -------------------------------------------------------------
-// LÓGICA DE GEOCERCA (Bounding Box de la CDMX)
-// -------------------------------------------------------------
-function isInsideCDMX(lat, lng) {
-  return lat >= 19.04 && lat <= 19.59 && lng >= -99.37 && lng <= -98.94;
-}
+    const markers = {};
+    const socket = io();
 
-function processLocationUpdate(data) {
-  const { id, lat, lng, username } = data;
-  const previousState = activeDevices[id];
-  const currentlyInside = isInsideCDMX(lat, lng);
-
-  const payload = {
-    id,
-    lat,
-    lng,
-    isInsideCDMX: currentlyInside,
-    timestamp: Date.now(),
-    updatedBy: username
-  };
-
-  // Alerta si la unidad estaba dentro y sale de la zona
-  if (previousState && previousState.isInsideCDMX && !currentlyInside) {
-    const alertMsg = `⚠️ ALERTA GEOCERCA: La unidad "${id}" ha salido de la CDMX.\nCoordenadas: ${lat.toFixed(4)}, ${lng.toFixed(4)}`;
-    
-    // 1. Notificación a Telegram
-    sendTelegramAlert(alertMsg);
-
-    // 2. Notificación en pantalla vía WebSocket
-    io.emit('geofence_alert', {
-      id,
-      title: 'Salida de Zona CDMX',
-      message: `La unidad "${id}" cruzó el límite exterior de la CDMX.`,
-      lat,
-      lng,
-      timestamp: Date.now()
+    socket.on('connect', () => {
+      document.getElementById('status').innerText = 'Estado: Transmitiendo datos...';
     });
-  }
 
-  activeDevices[id] = payload;
-  io.emit('location_updated', payload);
-  return payload;
-}
-
-// -------------------------------------------------------------
-// RUTAS Y ENDPOINTS HTTP
-// -------------------------------------------------------------
-app.get('/', (req, res) => {
-  res.sendFile(path.join(__dirname, 'public', 'login.html'));
-});
-
-app.get('/login', (req, res) => {
-  res.sendFile(path.join(__dirname, 'public', 'login.html'));
-});
-
-app.get('/dashboard', (req, res) => {
-  res.sendFile(path.join(__dirname, 'public', 'dashboard.html'));
-});
-
-// Autenticación de usuarios
-app.post('/api/login', (req, res) => {
-  const { username, password } = req.body;
-  const user = USERS_DB[username];
-
-  if (user && user.password === password) {
-    return res.json({
-      status: 'ok',
-      username,
-      name: user.name,
-      units: user.units
+    // Actualizaciones de marcadores en el mapa
+    socket.on('location_updated', (data) => {
+      if (userSession.units.includes(data.id)) {
+        if (markers[data.id]) {
+          markers[data.id].setLatLng([data.lat, data.lng]);
+        } else {
+          markers[data.id] = L.marker([data.lat, data.lng]).addTo(map).bindPopup(`Unidad: ${data.id}`);
+        }
+      }
     });
-  }
 
-  res.status(401).json({ error: 'Usuario o contraseña incorrectos' });
-});
+    // Manejar Alertas en Pantalla
+    socket.on('geofence_alert', (alert) => {
+      if (userSession.units.includes(alert.id)) {
+        const banner = document.getElementById('alertBanner');
+        banner.style.display = 'block';
+        banner.innerText = `🚨 ${alert.title}: ${alert.message}`;
+        setTimeout(() => { banner.style.display = 'none'; }, 8000);
+      }
+    });
 
-// -------------------------------------------------------------
-// CONEXIÓN WEBSOCKET
-// -------------------------------------------------------------
-io.on('connection', (socket) => {
-  socket.emit('initial_locations', activeDevices);
+    // Envío automático cada 5 segundos
+    setInterval(() => {
+      if (navigator.geolocation) {
+        navigator.geolocation.getCurrentPosition((pos) => {
+          socket.emit('update_location', {
+            id: unitSelect.value,
+            lat: pos.coords.latitude,
+            lng: pos.coords.longitude,
+            username: userSession.username
+          });
+        });
+      }
+    }, 5000);
 
-  socket.on('update_location', (data) => {
-    if (data.id && data.lat !== undefined && data.lng !== undefined) {
-      processLocationUpdate(data);
+    function logout() {
+      localStorage.removeItem('userSession');
+      window.location.href = '/login';
     }
-  });
-});
-
-const PORT = process.env.PORT || 3000;
-server.listen(PORT, () => {
-  console.log(`Servidor activo en el puerto ${PORT}`);
-});
+  </script>
+</body>
+</html>
