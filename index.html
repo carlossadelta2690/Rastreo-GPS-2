@@ -13,14 +13,14 @@ app.use(express.json());
 app.use(express.static(path.join(__dirname, 'public')));
 
 // -------------------------------------------------------------
-// CONFIGURACIÓN DE TELEGRAM (Reemplaza con tus datos reales)
+// CONFIGURACIÓN DE TELEGRAM
 // -------------------------------------------------------------
 const TELEGRAM_BOT_TOKEN = process.env.TELEGRAM_BOT_TOKEN || 'TU_TELEGRAM_BOT_TOKEN';
 const TELEGRAM_CHAT_ID = process.env.TELEGRAM_CHAT_ID || 'TU_TELEGRAM_CHAT_ID';
 
 async function sendTelegramAlert(message) {
   if (!TELEGRAM_BOT_TOKEN || TELEGRAM_BOT_TOKEN === 'TU_TELEGRAM_BOT_TOKEN') {
-    console.log('[Telegram Simulación]:', message);
+    console.log('[Simulación Telegram]:', message);
     return;
   }
   try {
@@ -31,37 +31,38 @@ async function sendTelegramAlert(message) {
       body: JSON.stringify({ chat_id: TELEGRAM_CHAT_ID, text: message })
     });
   } catch (error) {
-    console.error('Error enviando mensaje a Telegram:', error.message);
+    console.error('Error al enviar alerta a Telegram:', error.message);
   }
-// Middleware simple de autenticación o redirección
-app.get('/login', (req, res) => {
-    res.sendFile(path.join(__dirname, 'public', 'login.html'));
-});
-
-// Endpoint para validar credenciales
-app.post('/api/login', (req, res) => {
-    const { username, password } = req.body;
-    
-    // Sustituye con tu lógica de verificación/BD real
-    if (username === 'admin' && password === '123456') {
-        return res.json({ status: 'ok', token: 'token-de-sesion-demo' });
-    }
-    
-    res.status(401).json({ error: 'Credenciales incorrectas' });
-});
+}
 
 // -------------------------------------------------------------
-// GEOCERCA: Límites aproximados de la CDMX (Bounding Box)
-// Latitud: 19.04 a 19.59 | Longitud: -99.37 a -98.94
+// BASE DE DATOS EN MEMORIA (Usuarios y sus unidades asignadas)
+// -------------------------------------------------------------
+const USERS_DB = {
+  'admin': {
+    password: '123',
+    name: 'Administrador Flota',
+    units: ['unidad-01', 'unidad-02', 'unidad-03']
+  },
+  'chofer1': {
+    password: '123',
+    name: 'Juan Pérez',
+    units: ['unidad-01']
+  }
+};
+
+// Estado global de ubicaciones activas
+const activeDevices = {};
+
+// -------------------------------------------------------------
+// LÓGICA DE GEOCERCA (Bounding Box de la CDMX)
 // -------------------------------------------------------------
 function isInsideCDMX(lat, lng) {
   return lat >= 19.04 && lat <= 19.59 && lng >= -99.37 && lng <= -98.94;
 }
 
-const activeDevices = {};
-
 function processLocationUpdate(data) {
-  const { id, lat, lng } = data;
+  const { id, lat, lng, username } = data;
   const previousState = activeDevices[id];
   const currentlyInside = isInsideCDMX(lat, lng);
 
@@ -70,21 +71,22 @@ function processLocationUpdate(data) {
     lat,
     lng,
     isInsideCDMX: currentlyInside,
-    timestamp: Date.now()
+    timestamp: Date.now(),
+    updatedBy: username
   };
 
-  // Detectar si el dispositivo estaba dentro y acaba de salir de la CDMX
+  // Alerta si la unidad estaba dentro y sale de la zona
   if (previousState && previousState.isInsideCDMX && !currentlyInside) {
-    const alertMsg = `⚠️ ALERTA GPS: El dispositivo "${id}" ha salido de la CDMX.\nCoordenadas: ${lat.toFixed(4)}, ${lng.toFixed(4)}`;
+    const alertMsg = `⚠️ ALERTA GEOCERCA: La unidad "${id}" ha salido de la CDMX.\nCoordenadas: ${lat.toFixed(4)}, ${lng.toFixed(4)}`;
     
-    // 1. Enviar a Telegram
+    // 1. Notificación a Telegram
     sendTelegramAlert(alertMsg);
 
-    // 2. Enviar evento de alerta a las pantallas
+    // 2. Notificación en pantalla vía WebSocket
     io.emit('geofence_alert', {
       id,
-      title: 'Salida de Zona (CDMX)',
-      message: `El dispositivo "${id}" salió de los límites de la Ciudad de México.`,
+      title: 'Salida de Zona CDMX',
+      message: `La unidad "${id}" cruzó el límite exterior de la CDMX.`,
       lat,
       lng,
       timestamp: Date.now()
@@ -96,7 +98,41 @@ function processLocationUpdate(data) {
   return payload;
 }
 
-// WebSocket
+// -------------------------------------------------------------
+// RUTAS Y ENDPOINTS HTTP
+// -------------------------------------------------------------
+app.get('/', (req, res) => {
+  res.sendFile(path.join(__dirname, 'public', 'login.html'));
+});
+
+app.get('/login', (req, res) => {
+  res.sendFile(path.join(__dirname, 'public', 'login.html'));
+});
+
+app.get('/dashboard', (req, res) => {
+  res.sendFile(path.join(__dirname, 'public', 'dashboard.html'));
+});
+
+// Autenticación de usuarios
+app.post('/api/login', (req, res) => {
+  const { username, password } = req.body;
+  const user = USERS_DB[username];
+
+  if (user && user.password === password) {
+    return res.json({
+      status: 'ok',
+      username,
+      name: user.name,
+      units: user.units
+    });
+  }
+
+  res.status(401).json({ error: 'Usuario o contraseña incorrectos' });
+});
+
+// -------------------------------------------------------------
+// CONEXIÓN WEBSOCKET
+// -------------------------------------------------------------
 io.on('connection', (socket) => {
   socket.emit('initial_locations', activeDevices);
 
@@ -107,17 +143,7 @@ io.on('connection', (socket) => {
   });
 });
 
-// Endpoint HTTP REST opcional (para dispositivos GPS dedicados)
-app.post('/api/location', (req, res) => {
-  const { id, lat, lng } = req.body;
-  if (!id || lat === undefined || lng === undefined) {
-    return res.status(400).json({ error: 'Parámetros requeridos: id, lat, lng' });
-  }
-  const payload = processLocationUpdate({ id, lat: parseFloat(lat), lng: parseFloat(lng) });
-  res.json({ status: 'ok', data: payload });
-});
-
 const PORT = process.env.PORT || 3000;
 server.listen(PORT, () => {
-  console.log(`Servidor activo en http://localhost:${PORT}`);
+  console.log(`Servidor activo en el puerto ${PORT}`);
 });
