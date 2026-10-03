@@ -6,10 +6,15 @@ const PORT = process.env.PORT || 3000;
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
 
-const TELEGRAM_BOT_TOKEN = process.env.TELEGRAM_BOT_TOKEN || '8960091089:AAHQHEqEWh6Pli3yJDupRGInRL06qOq3iRg';
+const TELEGRAM_BOT_TOKEN = process.env.TELEGRAM_BOT_TOKEN || '8960091089:AAHQHEqEWh6P1i3yJDupRGInRL06qOq3iRg';
 const TELEGRAM_CHAT_ID = process.env.TELEGRAM_CHAT_ID || '7996171093';
 
-// Base de datos en memoria con usuarios y unidades asignadas
+// Centro de referencia: Ciudad de México (Zócalo / Centro)
+const CDMX_LAT = 19.4326;
+const CDMX_LON = -99.1332;
+const RADIO_MAXIMO_KM = 35; // Límite de la geocerca en kilómetros desde el centro de CDMX
+const TIEMPO_DETENIDO_MAX_MINUTOS = 30; // Tiempo sin movimiento para activar alerta (en minutos)
+
 let baseDatosGPS = {
     'dispositivo 1': {
         deviceId: 'dispositivo 1',
@@ -18,401 +23,198 @@ let baseDatosGPS = {
         lon: -99.1332,
         speed: 0,
         batt: '98%',
-        estadoGeofence: 'CDMX',
-        ultimaFechaMovimiento: Date.now(),
-        alertaParadoEnviada: false,
-        fecha: new Date().toLocaleTimeString('es-MX')
-    },
-    'dispositivo 2': {
-        deviceId: 'dispositivo 2',
-        usuarioAsignado: 'admin',
-        lat: 19.5000,
-        lon: -99.2000,
-        speed: 25,
-        batt: '85%',
-        estadoGeofence: 'CDMX',
-        ultimaFechaMovimiento: Date.now(),
-        alertaParadoEnviada: false,
-        fecha: new Date().toLocaleTimeString('es-MX')
+        estadoGeofence: 'Dentro de CDMX',
+        ultimaActualizacion: new Date().toISOString(),
+        inicioDetenido: new Date().getTime(),
+        alertaSinMovimientoEnviada: false,
+        alertaFueraGeocercaEnviada: false
     }
 };
 
-function determinarEstado(lat, lon) {
-    if (lat >= 19.048 && lat <= 19.592 && lon >= -99.364 && lon >= -98.940) {
-        return 'CDMX';
-    }
-    return 'Fuera de CDMX / Estado de México u otro';
+// Función para calcular distancia geográfica entre dos puntos (Fórmula de Haversine)
+function calcularDistanciaKM(lat1, lon1, lat2, lon2) {
+    const R = 6371; // Radio de la Tierra en km
+    const dLat = (lat2 - lat1) * Math.PI / 180;
+    const dLon = (lon2 - lon1) * Math.PI / 180;
+    const a = Math.sin(dLat / 2) * Math.sin(dLat / 2) +
+              Math.cos(lat1 * Math.PI / 180) * Math.cos(lat2 * Math.PI / 180) *
+              Math.sin(dLon / 2) * Math.sin(dLon / 2);
+    const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
+    return R * c;
 }
 
-function enviarNotificacionTelegram(mensaje) {
-    if (!TELEGRAM_BOT_TOKEN || !TELEGRAM_CHAT_ID) {
-        console.log("⚠️ Faltan variables TELEGRAM_BOT_TOKEN o TELEGRAM_CHAT_ID.");
-        return Promise.resolve();
-    }
+async function enviarNotificacionTelegram(texto) {
+    if (!TELEGRAM_BOT_TOKEN || !TELEGRAM_CHAT_ID) return;
+    const payload = JSON.stringify({ chat_id: TELEGRAM_CHAT_ID, text: texto, parse_mode: 'HTML' });
+    const options = {
+        hostname: 'api.telegram.org',
+        port: 443,
+        path: `/bot${TELEGRAM_BOT_TOKEN}/sendMessage`,
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(payload) }
+    };
+    const req = https.request(options);
+    req.on('error', (e) => console.error('Error Telegram:', e));
+    req.write(payload);
+    req.end();
+}
 
-    return new Promise((resolve) => {
-        const payload = JSON.stringify({
-            chat_id: TELEGRAM_CHAT_ID,
-            text: mensaje,
-            parse_mode: 'HTML'
-        });
-
-        const options = {
-            hostname: 'api.telegram.org',
-            port: 443,
-            path: `/bot${TELEGRAM_BOT_TOKEN}/sendMessage`,
-            method: 'POST',
-            headers: {
-                'Content-Type': 'application/json',
-                'Content-Length': Buffer.byteLength(payload)
-            }
+// Endpoint para recibir las coordenadas desde el GPS / celular
+app.all('/api/gps', (req, res) => {
+    const data = { ...req.query, ...req.body };
+    const id = data.id || data.deviceid || 'dispositivo 1';
+    
+    if (!baseDatosGPS[id]) {
+        baseDatosGPS[id] = {
+            deviceId: id,
+            usuarioAsignado: 'Chofer',
+            inicioDetenido: new Date().getTime(),
+            alertaSinMovimientoEnviada: false,
+            alertaFueraGeocercaEnviada: false
         };
-
-        const req = https.request(options, (res) => {
-            let responseData = '';
-            res.on('data', chunk => responseData += chunk);
-            res.on('end', () => {
-                console.log("📲 Respuesta Telegram:", responseData);
-                resolve();
-            });
-        });
-
-        req.on('error', (e) => {
-            console.error("❌ Error Telegram:", e.message);
-            resolve();
-        });
-
-        req.write(payload);
-        req.end();
-    });
-}
-
-// Alerta de 15 minutos parado
-setInterval(() => {
-    const ahora = Date.now();
-    const LIMITE_PARADO_MS = 15 * 60 * 1000;
-
-    Object.values(baseDatosGPS).forEach(async (dev) => {
-        if (dev.speed === 0 && (ahora - dev.ultimaFechaMovimiento) >= LIMITE_PARADO_MS) {
-            if (!dev.alertaParadoEnviada) {
-                dev.alertaParadoEnviada = true;
-                const mapaUrl = `https://maps.google.com/?q=${dev.lat},${dev.lon}`;
-                const msj = `⚠️ <b>ALERTA DE INACTIVIDAD</b>\n` +
-                            `<b>Unidad:</b> ${dev.deviceId}\n` +
-                            `<b>Asignado a:</b> ${dev.usuarioAsignado}\n` +
-                            `<b>Estatus:</b> Detenido por más de 15 minutos.\n` +
-                            `<b>Ubicación:</b> <a href="${mapaUrl}">Ver Mapa</a>`;
-                console.log(`⏰ Alerta 15 min enviada para ${dev.deviceId}`);
-                await enviarNotificacionTelegram(msj);
-            }
-        }
-    });
-}, 30000);
-
-// API Login
-app.post('/api/login', (req, res) => {
-    const { usuario, password } = req.body;
-    if ((usuario === 'admin' && password === 'admin123') || (usuario === 'chofer' && password === '1234')) {
-        return res.json({ success: true, usuario });
     }
-    return res.status(401).json({ success: false, message: 'Credenciales incorrectas' });
+
+    const dev = baseDatosGPS[id];
+    dev.lat = parseFloat(data.lat || dev.lat || CDMX_LAT);
+    dev.lon = parseFloat(data.lon || dev.lon || CDMX_LON);
+    const nuevaVelocidad = data.speed ? Math.round(parseFloat(data.speed) * 1.852) : 0;
+
+    // Manejo del contador de tiempo sin movimiento
+    if (nuevaVelocidad === 0) {
+        if (!dev.inicioDetenido) dev.inicioDetenido = new Date().getTime();
+    } else {
+        dev.inicioDetenido = null;
+        dev.alertaSinMovimientoEnviada = false; // Se restablece al moverse
+    }
+
+    dev.speed = nuevaVelocidad;
+    dev.batt = data.batt ? `${data.batt}%` : (dev.batt || 'N/A');
+    dev.ultimaActualizacion = new Date().toISOString();
+
+    res.send('OK');
 });
 
-// Ingesta GPS
-app.post('/api/posicion', async (req, res) => {
-    const { id, lat, lon, speed, batt, usuario } = req.body;
-    const deviceKey = id || 'dispositivo 1';
-    
-    if (lat && lon) {
-        const nuevaLat = parseFloat(lat);
-        const nuevaLon = parseFloat(lon);
-        const velocidad = parseFloat(speed || 0);
-        const estadoActual = determinarEstado(nuevaLat, nuevaLon);
-        const dispositivoPrevio = baseDatosGPS[deviceKey] || {};
-
-        if (dispositivoPrevio.estadoGeofence && dispositivoPrevio.estadoGeofence !== estadoActual) {
-            const mapaUrl = `https://maps.google.com/?q=${nuevaLat},${nuevaLon}`;
-            let mensajeAlerta = `🚨 <b>ALERTA DE CAMBIO DE ZONA</b>\n` +
-                                `<b>Unidad:</b> ${deviceKey}\n` +
-                                `<b>Anterior:</b> ${dispositivoPrevio.estadoGeofence}\n` +
-                                `<b>Actual:</b> ${estadoActual}\n` +
-                                `<b>Ubicación:</b> <a href="${mapaUrl}">Ver Mapa</a>`;
-            await enviarNotificacionTelegram(mensajeAlerta);
-        }
-
-        let tiempoMovimiento = dispositivoPrevio.ultimaFechaMovimiento || Date.now();
-        let alertaEnviada = dispositivoPrevio.alertaParadoEnviada || false;
-        
-        if (velocidad > 0) {
-            tiempoMovimiento = Date.now();
-            alertaEnviada = false;
-        }
-
-        baseDatosGPS[deviceKey] = {
-            deviceId: deviceKey,
-            usuarioAsignado: usuario || dispositivoPrevio.usuarioAsignado || 'chofer',
-            lat: nuevaLat,
-            lon: nuevaLon,
-            speed: velocidad,
-            batt: batt || '100%',
-            estadoGeofence: estadoActual,
-            ultimaFechaMovimiento: tiempoMovimiento,
-            alertaParadoEnviada: alertaEnviada,
-            fecha: new Date().toLocaleTimeString('es-MX')
-        };
-    }
+// Botones manuales de alerta (SOS / Todo Bien)
+app.post('/api/alerta', async (req, res) => {
+    const { tipo, deviceId } = req.body;
+    const dev = baseDatosGPS[deviceId] || { deviceId: 'dispositivo 1', usuarioAsignado: 'chofer', lat: CDMX_LAT, lon: CDMX_LON, batt: '98%' };
+    const mapaUrl = `https://maps.google.com/?q=${dev.lat},${dev.lon}`;
+    let msg = tipo === 'SOS' 
+        ? `🚨 <b>¡ALERTA DE AUXILIO (SOS)!</b>\n\n🚘 <b>Unidad:</b> ${dev.deviceId}\n👤 <b>Usuario:</b> ${dev.usuarioAsignado}\n🔋 <b>Batería:</b> ${dev.batt}\n🗺️ <a href="${mapaUrl}">Ubicación en Mapa</a>`
+        : `✅ <b>ESTADO: TODO BIEN</b>\n\n🚘 <b>Unidad:</b> ${dev.deviceId}\n👤 <b>Usuario:</b> ${dev.usuarioAsignado}\n🔋 <b>Batería:</b> ${dev.batt}\n🗺️ <a href="${mapaUrl}">Ubicación en Mapa</a>`;
+    await enviarNotificacionTelegram(msg);
     res.json({ status: 'ok' });
 });
 
-// Endpoint de dispositivos por usuario
-app.get('/api/dispositivos', (req, res) => {
-    const usuario = req.query.usuario;
-    let lista = Object.values(baseDatosGPS);
-    if (usuario && usuario !== 'admin') {
-        lista = lista.filter(d => d.usuarioAsignado === usuario);
-    }
-    res.json(lista);
-});
+app.get('/api/unidades', (req, res) => res.json(Object.values(baseDatosGPS)));
 
-// Reporte Manual (SOS / OK)
-app.post('/api/reportar-estado', async (req, res) => {
-    const { usuario, estado, lat, lon, dispositivo } = req.body;
-    const mapaUrl = `https://maps.google.com/?q=${lat},${lon}`;
-
-    let textoTelegram = estado === 'SOS'
-        ? `🚨 <b>ALERTA SOS SOLICITADA</b>\n<b>Usuario:</b> ${usuario}\n<b>Unidad:</b> ${dispositivo}\n<b>Ubicación:</b> <a href="${mapaUrl}">Google Maps</a>`
-        : `✅ <b>REPORTE OK</b>\n<b>Usuario:</b> ${usuario}\n<b>Unidad:</b> ${dispositivo}\n<b>Ubicación:</b> <a href="${mapaUrl}">Google Maps</a>`;
-
-    await enviarNotificacionTelegram(textoTelegram);
-    res.json({ success: true });
-});
-
-// Interfaz Web completa
+// Interfaz Web Principal
 app.get('/', (req, res) => {
     res.send(`
 <!DOCTYPE html>
 <html lang="es">
 <head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Panel Rastreo GPS</title>
+    <meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>GPS Tracker</title>
     <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
     <style>
-        body { margin: 0; padding: 0; font-family: Arial, sans-serif; background: #eef2f5; }
-        #map { height: 100vh; width: 100vw; display: none; }
-        .login-box { max-width: 320px; margin: 80px auto; padding: 25px; background: white; border-radius: 10px; box-shadow: 0 4px 15px rgba(0,0,0,0.1); text-align: center; }
-        .login-box input { width: 90%; padding: 12px; margin: 8px 0; border: 1px solid #ccc; border-radius: 5px; box-sizing: border-box; }
-        .login-box button { width: 90%; padding: 12px; background: #007bff; color: white; border: none; border-radius: 5px; font-weight: bold; cursor: pointer; }
-        .info-panel { position: absolute; top: 15px; right: 15px; z-index: 1000; background: white; padding: 15px; border-radius: 10px; box-shadow: 0 4px 15px rgba(0,0,0,0.2); width: 290px; }
-        .btn { width: 100%; padding: 10px; border: none; border-radius: 5px; color: white; font-weight: bold; margin-bottom: 6px; cursor: pointer; }
-        .select-user { width: 100%; padding: 8px; margin-bottom: 10px; border-radius: 5px; border: 1px solid #ccc; }
-        .unit-card { background: #f8f9fa; border-left: 4px solid #007bff; padding: 8px; margin-bottom: 8px; border-radius: 4px; font-size: 12px; }
+        body { font-family: sans-serif; margin: 10px; background: #f0f2f5; }
+        .card { background: white; padding: 15px; border-radius: 8px; margin-bottom: 10px; box-shadow: 0 2px 4px rgba(0,0,0,0.1); }
+        .btn { width: 100%; padding: 12px; margin-top: 8px; border: none; border-radius: 5px; font-weight: bold; color: white; cursor: pointer; }
+        .btn-sos { background: #e74c3c; } .btn-ok { background: #2ecc71; }
+        #map { height: 350px; border-radius: 8px; margin-top: 10px; }
     </style>
 </head>
 <body>
-
-    <div id="login-box" class="login-box">
-        <h2 style="margin-top:0;">📍 Rastreo GPS</h2>
-        <p style="color:#666; font-size:14px;">Ingresa tus credenciales</p>
-        <input type="text" id="userInput" placeholder="Usuario (admin/chofer)">
-        <input type="password" id="passInput" placeholder="Contraseña">
-        <button onclick="login()">Ingresar</button>
-        <p id="error-msg" style="color:red; display:none; font-size:12px; margin-top:10px;">Credenciales incorrectas</p>
-    </div>
-
+    <h2>📡 Sistema de Rastreo GPS</h2>
+    <div id="unidades">Cargando datos...</div>
     <div id="map"></div>
-
-    <div id="panel-vehiculo" class="info-panel" style="display:none;">
-        <h3 style="margin-top:0; font-size:15px; color:#333;">👤 Panel de Control</h3>
-        
-        <label style="font-size:12px; font-weight:bold;">Filtrar por Usuario:</label>
-        <select id="userSelector" class="select-user" onchange="cambiarFiltroUsuario()">
-            <option value="admin">Todos los Usuarios (Admin)</option>
-            <option value="chofer">Ver sólo Chofer</option>
-        </select>
-
-        <h4 style="margin: 8px 0 5px 0; font-size:13px; color:#555;">🚘 Unidades Asignadas</h4>
-        <div id="lista-unidades">Cargando unidades...</div>
-
-        <hr style="margin: 10px 0; border: 0; border-top: 1px solid #ddd;">
-        <p style="margin:5px 0; font-size:12px; font-weight:bold;">Enviar Reporte Manual:</p>
-        <button class="btn" onclick="enviarReporteEstado('OK')" style="background-color: #28a745;">✅ Todo Bien</button>
-        <button class="btn" onclick="enviarReporteEstado('SOS')" style="background-color: #dc3545;">🚨 Solicitar Ayuda (SOS)</button>
-        <button class="btn" onclick="cerrarSesion()" style="background-color: #6c757d; margin-top:5px;">Cerrar Sesión</button>
-    </div>
-
     <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
     <script>
-        var map, markers = {};
-        var currentUser = localStorage.getItem('gps_user') || null;
-        var filtroUsuario = localStorage.getItem('gps_filter') || 'admin';
-        var ultimaLat = 19.4326;
-        var ultimaLon = -99.1332;
+        const map = L.map('map').setView([19.4326, -99.1332], 10);
+        L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png').addTo(map);
+        let markers = {};
 
-        if (currentUser) {
-            mostrarMapa();
-        }
-
-        async function login() {
-            var u = document.getElementById('userInput').value;
-            var p = document.getElementById('passInput').value;
-            try {
-                var res = await fetch('/api/login', {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ usuario: u, password: p })
-                });
-                var data = await res.json();
-                if (data.success) {
-                    localStorage.setItem('gps_user', u);
-                    currentUser = u;
-                    filtroUsuario = u;
-                    localStorage.setItem('gps_filter', u);
-                    mostrarMapa();
-                } else {
-                    document.getElementById('error-msg').style.display = 'block';
+        async function update() {
+            const res = await fetch('/api/unidades');
+            const data = await res.json();
+            let html = '';
+            data.forEach(dev => {
+                html += '<div class="card">' +
+                    '<h3>🚘 ' + dev.deviceId + '</h3>' +
+                    '<p>👤 Usuario: <b>' + dev.usuarioAsignado + '</b></p>' +
+                    '<p>🔋 Batería: <b>' + dev.batt + '</b> | ⚡ Vel: <b>' + dev.speed + ' km/h</b></p>' +
+                    '<p>📍 Zona: <b>' + (dev.estadoGeofence || 'CDMX') + '</b></p>' +
+                    '<button class="btn btn-sos" onclick="sendAlert(\'SOS\', \'' + dev.deviceId + '\')">🚨 SOLICITAR AYUDA (SOS)</button>' +
+                    '<button class="btn btn-ok" onclick="sendAlert(\'OK\', \'' + dev.deviceId + '\')">✅ TODO BIEN</button>' +
+                    '</div>';
+                if (dev.lat && dev.lon) {
+                    if (markers[dev.deviceId]) markers[dev.deviceId].setLatLng([dev.lat, dev.lon]);
+                    else markers[dev.deviceId] = L.marker([dev.lat, dev.lon]).addTo(map);
                 }
-            } catch(e) {
-                alert('Error al comunicar con el servidor');
-            }
+            });
+            document.getElementById('unidades').innerHTML = html;
         }
 
-        function cerrarSesion() {
-            localStorage.removeItem('gps_user');
-            localStorage.removeItem('gps_filter');
-            location.reload();
+        async function sendAlert(tipo, deviceId) {
+            await fetch('/api/alerta', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ tipo, deviceId })
+            });
+            alert('Alerta enviada a Telegram');
         }
-
-        function cambiarFiltroUsuario() {
-            filtroUsuario = document.getElementById('userSelector').value;
-            localStorage.setItem('gps_filter', filtroUsuario);
-            actualizarMapa();
-        }
-
-        function mostrarMapa() {
-            document.getElementById('login-box').style.display = 'none';
-            document.getElementById('map').style.display = 'block';
-            document.getElementById('panel-vehiculo').style.display = 'block';
-            document.getElementById('userSelector').value = filtroUsuario;
-
-            if (!map) {
-                map = L.map('map').setView([19.4326, -99.1332], 12);
-                L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
-                    attribution: '© OpenStreetMap'
-                }).addTo(map);
-            }
-
-            actualizarMapa();
-            setInterval(actualizarMapa, 5000);
-            setInterval(enviarUbicacionPeriodica, 5000);
-        }
-
-        async function enviarUbicacionPeriodica() {
-            try {
-                await fetch('/api/posicion', {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({
-                        id: 'dispositivo 1',
-                        usuario: 'chofer',
-                        lat: ultimaLat,
-                        lon: ultimaLon,
-                        speed: 0,
-                        batt: '98%'
-                    })
-                });
-            } catch(e) {}
-        }
-
-        async function enviarReporteEstado(tipo) {
-            var msj = tipo === 'SOS' ? '¿Confirmas enviar ALERTA SOS?' : '¿Confirmas reportar TODO BIEN?';
-            if (!confirm(msj)) return;
-
-            var viejo = document.getElementById('aviso-confirmacion');
-            if (viejo) viejo.remove();
-
-            var aviso = document.createElement('div');
-            aviso.id = 'aviso-confirmacion';
-            aviso.style.padding = '8px';
-            aviso.style.marginTop = '8px';
-            aviso.style.borderRadius = '5px';
-            aviso.style.textAlign = 'center';
-            aviso.style.fontWeight = 'bold';
-            aviso.style.fontSize = '12px';
-
-            if (tipo === 'OK') {
-                aviso.style.background = '#d4edda';
-                aviso.style.color = '#155724';
-                aviso.innerText = '✅ Reporte enviado: Todo bien';
-            } else {
-                aviso.style.background = '#f8d7da';
-                aviso.style.color = '#721c24';
-                aviso.innerText = '🚨 Alerta SOS enviada';
-            }
-
-            document.getElementById('panel-vehiculo').appendChild(aviso);
-
-            try {
-                await fetch('/api/reportar-estado', {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ 
-                        usuario: currentUser, 
-                        estado: tipo, 
-                        lat: ultimaLat, 
-                        lon: ultimaLon, 
-                        dispositivo: 'dispositivo 1' 
-                    })
-                });
-            } catch(e) {}
-
-            setTimeout(function() {
-                var el = document.getElementById('aviso-confirmacion');
-                if (el) el.remove();
-            }, 3000);
-        }
-
-        async function actualizarMapa() {
-            try {
-                var res = await fetch('/api/dispositivos?usuario=' + encodeURIComponent(filtroUsuario));
-                if (!res.ok) return;
-                var dispositivos = await res.json();
-                
-                var contenedorHtml = '';
-                
-                if (!dispositivos || dispositivos.length === 0) {
-                    document.getElementById('lista-unidades').innerHTML = '<p style="font-size:12px; color:#888;">Sin unidades para este usuario.</p>';
-                    return;
-                }
-
-                dispositivos.forEach(function(dev) {
-                    ultimaLat = dev.lat;
-                    ultimaLon = dev.lon;
-                    var pos = [dev.lat, dev.lon];
-
-                    if (markers[dev.deviceId]) {
-                        markers[dev.deviceId].setLatLng(pos);
-                    } else {
-                        markers[dev.deviceId] = L.marker(pos).addTo(map)
-                            .bindPopup('<b>' + dev.deviceId + '</b><br>Asignado a: ' + dev.usuarioAsignado);
-                    }
-
-                    contenedorHtml += 
-                        '<div class="unit-card">' +
-                            '<b>' + dev.deviceId + '</b> (' + dev.estadoGeofence + ')<br>' +
-                            '<b>Usuario:</b> ' + dev.usuarioAsignado + '<br>' +
-                            '<b>Velocidad:</b> ' + dev.speed + ' km/h | <b>Batería:</b> ' + dev.batt + '<br>' +
-                            '<b>Hora:</b> ' + dev.fecha +
-                        '</div>';
-                });
-
-                document.getElementById('lista-unidades').innerHTML = contenedorHtml;
-            } catch (err) {}
-        }
+        update(); setInterval(update, 10000);
     </script>
 </body>
-</html>
-    `);
+</html>`);
 });
 
-app.listen(PORT, () => console.log('Servidor GPS corriendo en puerto ' + PORT));
+// Monitor automático en segundo plano (evalúa reglas cada 20 segundos)
+setInterval(async () => {
+    const ahora = new Date().getTime();
+
+    Object.values(baseDatosGPS).forEach(async (dev) => {
+        if (!dev.lat || !dev.lon) return;
+
+        const mapaUrl = `https://maps.google.com/?q=${dev.lat},${dev.lon}`;
+
+        // 1. REGLA: Salida de Geocerca (CDMX)
+        const distanciaCDMX = calcularDistanciaKM(CDMX_LAT, CDMX_LON, dev.lat, dev.lon);
+        
+        if (distanciaCDMX > RADIO_MAXIMO_KM) {
+            dev.estadoGeofence = 'Fuera de CDMX';
+            if (!dev.alertaFueraGeocercaEnviada) {
+                dev.alertaFueraGeocercaEnviada = true;
+                const msg = `⚠️ <b>ALERTA AUTOMÁTICA: UNIDAD FUERA DE CDMX</b>\n\n` +
+                            `🚘 <b>Unidad:</b> ${dev.deviceId}\n` +
+                            `👤 <b>Usuario:</b> ${dev.usuarioAsignado}\n` +
+                            `📍 <b>Distancia desde centro CDMX:</b> ${distanciaCDMX.toFixed(1)} km\n` +
+                            `⚡ <b>Velocidad:</b> ${dev.speed} km/h | 🔋 <b>Batería:</b> ${dev.batt}\n` +
+                            `🗺️ <a href="${mapaUrl}">Ver Ubicación Actual</a>`;
+                await enviarNotificacionTelegram(msg);
+            }
+        } else {
+            dev.estadoGeofence = 'Dentro de CDMX';
+            dev.alertaFueraGeocercaEnviada = false; // Se restablece al volver a CDMX
+        }
+
+        // 2. REGLA: Sin Movimiento (Tiempo inactivo excedido)
+        if (dev.speed === 0 && dev.inicioDetenido) {
+            const minutosDetenido = Math.floor((ahora - dev.inicioDetenido) / (1000 * 60));
+            if (minutosDetenido >= TIEMPO_DETENIDO_MAX_MINUTOS && !dev.alertaSinMovimientoEnviada) {
+                dev.alertaSinMovimientoEnviada = true;
+                const msg = `⏳ <b>ALERTA AUTOMÁTICA: UNIDAD DETENIDA</b>\n\n` +
+                            `🚘 <b>Unidad:</b> ${dev.deviceId}\n` +
+                            `👤 <b>Usuario:</b> ${dev.usuarioAsignado}\n` +
+                            `🛑 <b>Tiempo sin movimiento:</b> ${minutosDetenido} minutos\n` +
+                            `🔋 <b>Batería:</b> ${dev.batt}\n` +
+                            `🗺️ <a href="${mapaUrl}">Ver Ubicación Detenida</a>`;
+                await enviarNotificacionTelegram(msg);
+            }
+        }
+    });
+}, 20000);
+
+app.listen(PORT, () => console.log('Server activo en puerto ' + PORT));
+                                           
