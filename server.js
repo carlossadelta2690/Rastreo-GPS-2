@@ -92,19 +92,23 @@ app.all('/api/gps', (req, res) => {
 });
 
 app.post('/api/alerta', async (req, res) => {
-    const { tipo, deviceId } = req.body;
-    const dev = baseDatosGPS[deviceId] || { deviceId: 'dispositivo 1', usuarioAsignado: 'chofer', lat: CDMX_LAT, lon: CDMX_LON, batt: '98%' };
-    const mapaUrl = `https://maps.google.com/?q=${dev.lat},${dev.lon}`;
-    let msg = tipo === 'SOS' 
-        ? `🚨 <b>¡ALERTA DE AUXILIO (SOS)!</b>\n\n🚘 <b>Unidad:</b> ${dev.deviceId}\n👤 <b>Usuario:</b> ${dev.usuarioAsignado}\n🔋 <b>Batería:</b> ${dev.batt}\n🗺️ <a href="${mapaUrl}">Ubicación en Mapa</a>`
-        : `✅ <b>ESTADO: TODO BIEN</b>\n\n🚘 <b>Unidad:</b> ${dev.deviceId}\n👤 <b>Usuario:</b> ${dev.usuarioAsignado}\n🔋 <b>Batería:</b> ${dev.batt}\n🗺️ <a href="${mapaUrl}">Ubicación en Mapa</a>`;
-    await enviarNotificacionTelegram(msg);
-    res.status(200).json({ status: 'ok', message: 'Alerta enviada' });
-} catch (error) {
-    console.error('Error enviando alerta:', error);
-res.status(500).json({ status:'error', message: error.message });
-}
+    try {
+        const { tipo, deviceId } = req.body;
+        const dev = baseDatosGPS[deviceId] || { deviceId: 'dispositivo 1', usuarioAsignado: 'chofer', lat: CDMX_LAT, lon: CDMX_LON };
+        const mapaUrl = `https://maps.google.com/?q=${dev.lat},${dev.lon}`;
+        
+        let msg = tipo === 'SOS' 
+            ? `🚨 <b>ALERTA DE AUXILIO (SOS)</b>\n\n📌 <b>Unidad:</b> ${dev.deviceId}\n👤 <b>Usuario:</b> ${dev.usuarioAsignado}\n📍 <b>Ubicación:</b> ${mapaUrl}`
+            : `✅ <b>ESTADO: TODO BIEN</b>\n\n📌 <b>Unidad:</b> ${dev.deviceId}\n👤 <b>Usuario:</b> ${dev.usuarioAsignado}\n📍 <b>Ubicación:</b> ${mapaUrl}`;
+
+        await enviarNotificacionTelegram(msg);
+        res.status(200).json({ status: 'ok', message: 'Alerta enviada' });
+    } catch (error) {
+        console.error('Error enviando alerta:', error);
+        res.status(500).json({ status: 'error', message: error.message });
+    }
 });
+
 app.get('/api/unidades', (req, res) => res.json(Object.values(baseDatosGPS)));
 
 app.get('/', (req, res) => {
