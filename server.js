@@ -5,16 +5,16 @@ const PORT = process.env.PORT || 3000;
 
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
-
+   
 const TELEGRAM_BOT_TOKEN = process.env.TELEGRAM_BOT_TOKEN || '8960091089:AAHUDP3SN7Zc0L2xvPHzEef9EKE67LzEYU';
 const TELEGRAM_CHAT_ID = process.env.TELEGRAM_CHAT_ID || '7996171093';
 
 const CDMX_LAT = 19.4326;
 const CDMX_LON = -99.1332;
 const RADIO_MAXIMO_KM = 35;
-const TIEMPO_DETENIDO_MAX_MINUTOS = 30;
+const TIEMPO_DETENIDO_MAX_MINUTOS = 30; 
 
-let baseDatosGPS = {
+let baseDatosGPS = {  
     'dispositivo 1': {
         deviceId: 'dispositivo 1',
         usuarioAsignado: 'chofer',
