@@ -6,7 +6,7 @@ const PORT = process.env.PORT || 3000;
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
 
-const TELEGRAM_BOT_TOKEN = process.env.TELEGRAM_BOT_TOKEN || '8960091089:AAHQHEqEWh6P1i3yJDupRGInRL06qOq3iRg';
+const TELEGRAM_BOT_TOKEN = process.env.TELEGRAM_BOT_TOKEN || '8960091089:AAHUDP3SN7Zc0L2xvPHzEef9EKE67LzEYU';
 const TELEGRAM_CHAT_ID = process.env.TELEGRAM_CHAT_ID || '7996171093';
 
 
