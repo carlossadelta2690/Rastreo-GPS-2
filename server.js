@@ -9,7 +9,6 @@ app.use(express.urlencoded({ extended: true }));
 const TELEGRAM_BOT_TOKEN = process.env.TELEGRAM_BOT_TOKEN || '8960091089:AAHUDP3SN7Zc0L2xvPHzEef9EKE67LzEYU';
 const TELEGRAM_CHAT_ID = process.env.TELEGRAM_CHAT_ID || '7996171093';
 
-
 const CDMX_LAT = 19.4326;
 const CDMX_LON = -99.1332;
 const RADIO_MAXIMO_KM = 35;
@@ -50,7 +49,10 @@ async function enviarNotificacionTelegram(texto) {
         port: 443,
         path: `/bot${TELEGRAM_BOT_TOKEN}/sendMessage`,
         method: 'POST',
-        headers: { 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(payload) }
+        headers: { 
+            'Content-Type': 'application/json', 
+            'Content-Length': Buffer.byteLength(payload) 
+        }
     };
     const req = https.request(options);
     req.on('error', (e) => console.error('Error Telegram:', e));
@@ -95,7 +97,7 @@ app.post('/api/alerta', async (req, res) => {
     try {
         const { tipo, deviceId } = req.body;
         const dev = baseDatosGPS[deviceId] || { deviceId: 'dispositivo 1', usuarioAsignado: 'chofer', lat: CDMX_LAT, lon: CDMX_LON };
-        const mapaUrl = `https://maps.google.com/?q=${dev.lat},${dev.lon}`;
+        const mapaUrl = `https://google.com{dev.lat},${dev.lon}`;
         
         let msg = tipo === 'SOS' 
             ? `🚨 <b>ALERTA DE AUXILIO (SOS)</b>\n\n📌 <b>Unidad:</b> ${dev.deviceId}\n👤 <b>Usuario:</b> ${dev.usuarioAsignado}\n📍 <b>Ubicación:</b> ${mapaUrl}`
@@ -118,30 +120,58 @@ app.get('/', (req, res) => {
 <head>
     <meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>GPS Tracker</title>
-    <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
+    <link rel="stylesheet" href="https://unpkg.com" />
     <style>
         body { font-family: sans-serif; margin: 10px; background: #f0f2f5; }
-        .card { background: white; padding: 15px; border-radius: 8px; margin-bottom: 10px; box-shadow: 0 2px 4px rgba(0,0,0,0.1); }
-        .btn { width: 100%; padding: 12px; margin-top: 8px; border: none; border-radius: 5px; font-weight: bold; color: white; cursor: pointer; }
+        .wrapper { display: flex; flex-direction: column; gap: 10px; }
+        .card { background: white; padding: 15px; border-radius: 8px; box-shadow: 0 2px 4px rgba(0,0,0,0.1); }
+        .btn { width: 100%; padding: 12px; margin-top: 8px; border: none; border-radius: 5px; font-weight: bold; color: white; cursor: pointer; display: block; }
         .btn-sos { background: #e74c3c; } .btn-ok { background: #2ecc71; }
-        #map { height: 350px; border-radius: 8px; margin-top: 10px; }
+        #map { height: 400px; border-radius: 8px; width: 100%; position: relative; z-index: 1; }
+        
+        /* Modal prioritario sobre Leaflet */
+        .modal-overlay { display: none; position: fixed; top: 0; left: 0; width: 100%; height: 100%; background: rgba(0,0,0,0.6); z-index: 9999; justify-content: center; align-items: center; }
+        .modal-box { background: white; padding: 25px; border-radius: 12px; text-align: center; max-width: 320px; width: 90%; box-shadow: 0 10px 25px rgba(0,0,0,0.4); }
+        .modal-buttons { display: flex; gap: 12px; margin-top: 20px; }
+        .btn-modal { padding: 12px; border: none; border-radius: 6px; font-weight: bold; cursor: pointer; flex: 1; font-size: 14px; }
+        .btn-confirm { background: #2ecc71; color: white; }
+        .btn-cancel { background: #95a5a6; color: white; }
     </style>
 </head>
 <body>
     <h2>📡 Sistema de Rastreo GPS</h2>
-    <div id="unidades">Cargando datos...</div>
-    <div id="map"></div>
-    <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+    <div class="wrapper">
+        <div id="unidades">Cargando datos de las unidades...</div>
+        <div id="map"></div>
+    </div>
+
+    <!-- RECUADRO DE CONFIRMACIÓN -->
+    <div id="confirmModal" class="modal-overlay">
+        <div class="modal-box">
+            <h3 id="modalTitle">¿Confirmar Acción?</h3>
+            <p>Se enviará una notificación inmediata al chat de Telegram.</p>
+            <div class="modal-buttons">
+                <button class="btn-modal btn-confirm" id="btnConfirmar">Enviar</button>
+                <button class="btn-modal btn-cancel" onclick="cerrarRecuadro()">Cancelar</button>
+            </div>
+        </div>
+    </div>
+
+    <script src="https://unpkg.com"></script>
     <script>
-        const map = L.map('map').setView([19.4326, -99.1332], 10);
+        // Inicialización única del mapa fuera de los renders repetitivos
+        const map = L.map('map').setView([19.4326, -99.1332], 11);
         L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png').addTo(map);
+        
         let markers = {};
+        let datosAlertaPendiente = null;
 
         async function update() {
             try {
                 const res = await fetch('/api/unidades');
                 const data = await res.json();
                 let html = '';
+                
                 data.forEach(dev => {
                     const zona = dev.estadoGeofence || 'CDMX';
                     html += \`
@@ -150,10 +180,12 @@ app.get('/', (req, res) => {
                             <p>👤 Usuario: <b>\${dev.usuarioAsignado}</b></p>
                             <p>🔋 Batería: <b>\${dev.batt}</b> | ⚡ Vel: <b>\${dev.speed} km/h</b></p>
                             <p>📍 Zona: <b>\${zona}</b></p>
-                            <button class="btn btn-sos" onclick="sendAlert('SOS', '\${dev.deviceId}')">🚨 SOLICITAR AYUDA (SOS)</button>
-                            <button class="btn btn-ok" onclick="sendAlert('OK', '\${dev.deviceId}')">✅ TODO BIEN</button>
+                            <button class="btn btn-sos" onclick="abrirRecuadro('SOS', '\${dev.deviceId}')">🚨 SOLICITAR AYUDA (SOS)</button>
+                            <button class="btn btn-ok" onclick="abrirRecuadro('OK', '\${dev.deviceId}')">✅ TODO BIEN</button>
                         </div>
                     \`;
+                    
+                    // Actualización asíncrona del marcador sin tocar el contenedor HTML
                     if (dev.lat && dev.lon) {
                         if (markers[dev.deviceId]) {
                             markers[dev.deviceId].setLatLng([dev.lat, dev.lon]);
@@ -162,20 +194,43 @@ app.get('/', (req, res) => {
                         }
                     }
                 });
+                
                 document.getElementById('unidades').innerHTML = html;
             } catch (err) {
-                console.error(err);
+                console.error("Error en ciclo de lectura GPS:", err);
             }
         }
 
-        async function sendAlert(tipo, deviceId) {
-            await fetch('/api/alerta', {
+        function abrirRecuadro(tipo, deviceId) {
+            datosAlertaPendiente = { tipo, deviceId };
+            document.getElementById('modalTitle').innerText = tipo === 'SOS' ? '⚠️ ¿Enviar auxilio SOS?' : '✅ ¿Notificar que Todo Bien?';
+            document.getElementById('confirmModal').style.display = 'flex';
+        }
+
+        function cerrarRecuadro() {
+            document.getElementById('confirmModal').style.display = 'none';
+            datosAlertaPendiente = null;
+        }
+
+        // Ejecución inmediata del borrado visual
+        document.getElementById('btnConfirmar').onclick = function() {
+            if (!datosAlertaPendiente) return;
+            
+            const { tipo, deviceId } = datosAlertaPendiente;
+            
+            // Corrección: El recuadro desaparece ANTES de procesar peticiones HTTP o llamadas de mapas
+            cerrarRecuadro();
+
+            fetch('/api/alerta', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({ tipo, deviceId })
-            });
-            alert('Alerta enviada a Telegram');
-        }
+            })
+            .then(() => {
+                update(); // Refresca posiciones una vez enviado
+            })
+            .catch(err => console.error("Error al despachar el API:", err));
+        };
 
         update();
         setInterval(update, 10000);
@@ -184,46 +239,3 @@ app.get('/', (req, res) => {
 </html>`);
 });
 
-setInterval(async () => {
-    const ahora = new Date().getTime();
-
-    Object.values(baseDatosGPS).forEach(async (dev) => {
-        if (!dev.lat || !dev.lon) return;
-
-        const mapaUrl = `https://maps.google.com/?q=${dev.lat},${dev.lon}`;
-        const distanciaCDMX = calcularDistanciaKM(CDMX_LAT, CDMX_LON, dev.lat, dev.lon);
-        
-        if (distanciaCDMX > RADIO_MAXIMO_KM) {
-            dev.estadoGeofence = 'Fuera de CDMX';
-            if (!dev.alertaFueraGeocercaEnviada) {
-                dev.alertaFueraGeocercaEnviada = true;
-                const msg = `⚠️ <b>ALERTA AUTOMÁTICA: UNIDAD FUERA DE CDMX</b>\n\n` +
-                            `🚘 <b>Unidad:</b> ${dev.deviceId}\n` +
-                            `👤 <b>Usuario:</b> ${dev.usuarioAsignado}\n` +
-                            `📍 <b>Distancia desde centro CDMX:</b> ${distanciaCDMX.toFixed(1)} km\n` +
-                            `⚡ <b>Velocidad:</b> ${dev.speed} km/h | 🔋 <b>Batería:</b> ${dev.batt}\n` +
-                            `🗺️ <a href="${mapaUrl}">Ver Ubicación Actual</a>`;
-                await enviarNotificacionTelegram(msg);
-            }
-        } else {
-            dev.estadoGeofence = 'Dentro de CDMX';
-            dev.alertaFueraGeocercaEnviada = false;
-        }
-
-        if (dev.speed === 0 && dev.inicioDetenido) {
-            const minutosDetenido = Math.floor((ahora - dev.inicioDetenido) / (1000 * 60));
-            if (minutosDetenido >= TIEMPO_DETENIDO_MAX_MINUTOS && !dev.alertaSinMovimientoEnviada) {
-                dev.alertaSinMovimientoEnviada = true;
-                const msg = `⏳ <b>ALERTA AUTOMÁTICA: UNIDAD DETENIDA</b>\n\n` +
-                            `🚘 <b>Unidad:</b> ${dev.deviceId}\n` +
-                            `👤 <b>Usuario:</b> ${dev.usuarioAsignado}\n` +
-                            `🛑 <b>Tiempo sin movimiento:</b> ${minutosDetenido} minutos\n` +
-                            `🔋 <b>Batería:</b> ${dev.batt}\n` +
-                            `🗺️ <a href="${mapaUrl}">Ver Ubicación Detenida</a>`;
-                await enviarNotificacionTelegram(msg);
-            }
-        }
-    });
-}, 20000);
-
-app.listen(PORT, () => console.log('Server activo en puerto ' + PORT));
