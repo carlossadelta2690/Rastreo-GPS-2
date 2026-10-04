@@ -99,7 +99,7 @@ app.post('/api/alerta', async (req, res) => {
         ? `🚨 <b>¡ALERTA DE AUXILIO (SOS)!</b>\n\n🚘 <b>Unidad:</b> ${dev.deviceId}\n👤 <b>Usuario:</b> ${dev.usuarioAsignado}\n🔋 <b>Batería:</b> ${dev.batt}\n🗺️ <a href="${mapaUrl}">Ubicación en Mapa</a>`
         : `✅ <b>ESTADO: TODO BIEN</b>\n\n🚘 <b>Unidad:</b> ${dev.deviceId}\n👤 <b>Usuario:</b> ${dev.usuarioAsignado}\n🔋 <b>Batería:</b> ${dev.batt}\n🗺️ <a href="${mapaUrl}">Ubicación en Mapa</a>`;
     await enviarNotificacionTelegram(msg);
-    res.status(200)'.json({ status: 'ok', message: 'Alerta enviada' });
+    res.status(200).json({ status: 'ok', message: 'Alerta enviada' });
 } catch (error) {
     console.error('Error enviando alerta:', error);
 res.status(500).json({ status:'error', message: error.message });
