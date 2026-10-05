@@ -92,16 +92,16 @@ app.all('/api/gps', (req, res) => {
 
     res.send('OK');
 });
-
 app.post('/api/alerta', async (req, res) => {
     try {
         const { tipo, deviceId } = req.body;
         const dev = baseDatosGPS[deviceId] || { deviceId: 'dispositivo 1', usuarioAsignado: 'chofer', lat: CDMX_LAT, lon: CDMX_LON };
-        const mapaUrl = 'https://google.com/?q=' + dev.lat + ',' + dev.lon;
+        const mapaUrl = 'https://maps.google.com/?q=' + dev.lat + ',' + dev.lon;
         
-        let msg = tipo === 'SOS' 
-            ? '🚨 <b>ALERTA DE AUXILIO (SOS)</b>\n\n📌 <b>Unidad:</b> ${dev.deviceId}\n👤 <b>Usuario:</b> ${dev.usuarioAsignado}\n📍 <b>Ubicación:</b> ${mapaUrl}`
-            : '✅ <b>ESTADO: TODO BIEN</b>\n\n📌 <b>Unidad:</b> ${dev.deviceId}\n👤 <b>Usuario:</b> ${dev.usuarioAsignado}\n📍 <b>Ubicación:</b> ${mapaUrl}`;
+        let msg = '🚨 ALERTA DE AUXILIO (SOS)\n\n📌 Unidad: ' + dev.deviceId + '\n👤 Usuario: ' + dev.usuarioAsignado + '\n📍 Ubicación: ' + mapaUrl;
+        if (tipo !== 'SOS') {
+            msg = '✅ ESTADO: TODO BIEN\n\n📌 Unidad: ' + dev.deviceId + '\n👤 Usuario: ' + dev.usuarioAsignado + '\n📍 Ubicación: ' + mapaUrl;
+        }
 
         await enviarNotificacionTelegram(msg);
         res.status(200).json({ status: 'ok', message: 'Alerta enviada' });
